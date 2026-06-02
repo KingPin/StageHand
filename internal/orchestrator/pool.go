@@ -369,10 +369,11 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		p.chainAfterTerminal(false)
 	case swapHealthTimeout:
 		m := p.members[msg.target]
-		// Best-effort teardown of the unhealthy container, off-loop.
+		// Best-effort teardown of the unhealthy container, off-loop;
+		// bounded by pool lifetime via opCtx.
 		go func(cn string) {
 			p.ops.expect(cn, "stop")
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := p.opCtx(dockerCallDeadline)
 			defer cancel()
 			if err := p.docker.Stop(ctx, cn, gracefulStopTimeout); err != nil {
 				p.log.Error("stopping unhealthy container", "container", cn, "err", err)

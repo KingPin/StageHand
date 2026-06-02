@@ -216,10 +216,17 @@ func (p *Pool) handleExternalEvent(ev extEvent) {
 }
 
 // forceStop stops an intruder container (registered as a self-op so its
-// teardown events don't loop back as external).
+// teardown events don't loop back as external). It is a no-op once the
+// pool shuts down — a reload may have handed the container to a new
+// pool that legitimately runs it.
 func (p *Pool) forceStop(container string) {
+	select {
+	case <-p.done:
+		return
+	default:
+	}
 	p.ops.expect(container, "stop")
-	ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
+	ctx, cancel := p.opCtx(dockerCallDeadline)
 	defer cancel()
 	if err := p.docker.Stop(ctx, container, gracefulStopTimeout); err != nil {
 		p.log.Error("force-stopping unauthorized container", "container", container, "err", err)

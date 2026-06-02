@@ -51,7 +51,7 @@ func (p *Pool) doSwap(op uint64, m *member, others []string) {
 	}
 
 	p.ops.expect(m.containerName, "start") // before the call: the event must find it
-	ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
+	ctx, cancel := p.opCtx(dockerCallDeadline)
 	err := p.docker.Start(ctx, m.containerName)
 	cancel()
 	if err != nil {
@@ -106,7 +106,7 @@ func (p *Pool) doStopAll(op uint64) {
 }
 
 func (p *Pool) isRunning(containerName string) (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
+	ctx, cancel := p.opCtx(dockerCallDeadline)
 	defer cancel()
 	info, err := p.docker.InspectByName(ctx, containerName)
 	if err != nil {
@@ -119,7 +119,7 @@ func (p *Pool) isRunning(containerName string) (bool, error) {
 // reports it exited (PRD §3.2 step 3).
 func (p *Pool) stopAndConfirm(containerName string) error {
 	p.ops.expect(containerName, "stop") // before the call: the event must find it
-	ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
+	ctx, cancel := p.opCtx(dockerCallDeadline)
 	err := p.docker.Stop(ctx, containerName, gracefulStopTimeout)
 	cancel()
 	if err != nil {
@@ -156,6 +156,21 @@ func (p *Pool) sortedMembers() []*member {
 		out[i] = p.members[n]
 	}
 	return out
+}
+
+// opCtx returns a docker-call context bounded by timeout and cancelled
+// early when the pool shuts down — detached teardown work must not act
+// on containers after a reload has handed them to a new pool.
+func (p *Pool) opCtx(timeout time.Duration) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	go func() {
+		select {
+		case <-p.done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 // sleep waits d on the pool's clock, returning false on pool shutdown.
