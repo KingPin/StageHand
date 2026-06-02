@@ -41,10 +41,22 @@ type testPool struct {
 	gates  map[string]*healthGate
 }
 
-// newTestPool builds a two-service pool ("alpha", "beta") whose health
-// endpoints start open unless listed in held.
-func newTestPool(t *testing.T, clk clock.Clock, grace time.Duration, maxQueue int, held ...string) *testPool {
+// tpOpts configures newTestPoolOpts; zero values are sensible defaults.
+type tpOpts struct {
+	grace      time.Duration
+	cooldown   time.Duration
+	defaultSvc string
+	maxQueue   int // default 10
+	held       []string
+}
+
+// newTestPoolOpts builds a two-service pool ("alpha", "beta") whose
+// health endpoints start open unless listed in held.
+func newTestPoolOpts(t *testing.T, clk clock.Clock, o tpOpts) *testPool {
 	t.Helper()
+	if o.maxQueue == 0 {
+		o.maxQueue = 10
+	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	docker := dockerctl.NewFake("alpha-c", "beta-c")
 
@@ -52,7 +64,7 @@ func newTestPool(t *testing.T, clk clock.Clock, grace time.Duration, maxQueue in
 	members := make([]MemberConfig, 0, 2)
 	for _, svc := range []string{"alpha", "beta"} {
 		gate := &healthGate{}
-		if !slices.Contains(held, svc) {
+		if !slices.Contains(o.held, svc) {
 			gate.Open()
 		}
 		gates[svc] = gate
@@ -63,17 +75,23 @@ func newTestPool(t *testing.T, clk clock.Clock, grace time.Duration, maxQueue in
 			ContainerName:  svc + "-c",
 			HealthURL:      srv.URL + "/health",
 			StartupTimeout: 30 * time.Second,
-			MaxQueue:       maxQueue,
+			MaxQueue:       o.maxQueue,
 		})
 	}
 
 	p := NewPool(PoolConfig{
-		Name:        "gpu0",
-		GracePeriod: grace,
-		Members:     members,
+		Name:           "gpu0",
+		GracePeriod:    o.grace,
+		Cooldown:       o.cooldown,
+		DefaultService: o.defaultSvc,
+		Members:        members,
 	}, docker, clk, log)
 	t.Cleanup(p.Close)
 	return &testPool{pool: p, docker: docker, gates: gates}
+}
+
+func newTestPool(t *testing.T, clk clock.Clock, grace time.Duration, maxQueue int, held ...string) *testPool {
+	return newTestPoolOpts(t, clk, tpOpts{grace: grace, maxQueue: maxQueue, held: held})
 }
 
 // waitFor polls cond in real time, failing the test after 5 seconds.
@@ -299,7 +317,7 @@ func TestGracePeriodDefersSwap(t *testing.T) {
 
 	// While inside the grace window, alpha must NOT be stopped.
 	waitFor(t, "beta queued", func() bool {
-		return tp.pool.Snapshot().State == StateActive // still active, beta waiting
+		return tp.pool.QueuedCounts()["beta"] == 1
 	})
 	mock.Add(30 * time.Second) // halfway through grace
 	time.Sleep(20 * time.Millisecond)

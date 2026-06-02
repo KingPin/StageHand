@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,8 +27,8 @@ type MemberConfig struct {
 type PoolConfig struct {
 	Name           string
 	GracePeriod    time.Duration
-	Cooldown       time.Duration // 0 disables (wired in the cooldown commit)
-	DefaultService string        // "" = cold pool
+	Cooldown       time.Duration // 0 disables idle handling
+	DefaultService string        // "" = cold pool (stop everything on cooldown)
 	Members        []MemberConfig
 }
 
@@ -35,17 +36,19 @@ type PoolConfig struct {
 // goroutine. Public methods are safe for concurrent use; they only read
 // the atomic snapshot or exchange messages with the manager.
 type Pool struct {
-	name   string
-	grace  time.Duration
-	docker dockerctl.Client
-	clk    clock.Clock
-	log    *slog.Logger
+	name       string
+	grace      time.Duration
+	cooldown   time.Duration
+	defaultSvc string
+	docker     dockerctl.Client
+	clk        clock.Clock
+	log        *slog.Logger
 
 	snap     atomic.Pointer[PoolSnapshot]
 	cmds     chan any       // admitCmd | cancelCmd
 	swaps    chan swapMsg   // terminal reports from swap workers
 	timers   chan timerTick // epoch-guarded grace/cooldown ticks
-	activity chan string    // fast-path pings (cooldown reset, later commit)
+	activity chan string    // fast-path pings (cooldown reset)
 	done     chan struct{}
 	closing  sync.Once
 
@@ -54,26 +57,28 @@ type Pool struct {
 	active    string
 	startedAt time.Time
 	members   map[string]*member
-	epoch     uint64 // bumps invalidate in-flight timer ticks
-	opSeq     uint64 // bumps identify the current swap worker
-	seq       uint64 // waiter ordering across services
+	epochs    [2]uint64 // per timerKind; bumps invalidate in-flight ticks
+	opSeq     uint64    // bumps identify the current swap worker
+	seq       uint64    // waiter ordering across services
 }
 
 // NewPool builds the pool and starts its manager goroutine.
 func NewPool(cfg PoolConfig, docker dockerctl.Client, clk clock.Clock, log *slog.Logger) *Pool {
 	p := &Pool{
-		name:     cfg.Name,
-		grace:    cfg.GracePeriod,
-		docker:   docker,
-		clk:      clk,
-		log:      log.With("pool", cfg.Name),
-		cmds:     make(chan any),
-		swaps:    make(chan swapMsg, 4),
-		timers:   make(chan timerTick, 8),
-		activity: make(chan string, 64),
-		done:     make(chan struct{}),
-		state:    StateIdle,
-		members:  make(map[string]*member, len(cfg.Members)),
+		name:       cfg.Name,
+		grace:      cfg.GracePeriod,
+		cooldown:   cfg.Cooldown,
+		defaultSvc: cfg.DefaultService,
+		docker:     docker,
+		clk:        clk,
+		log:        log.With("pool", cfg.Name),
+		cmds:       make(chan any),
+		swaps:      make(chan swapMsg, 4),
+		timers:     make(chan timerTick, 8),
+		activity:   make(chan string, 64),
+		done:       make(chan struct{}),
+		state:      StateIdle,
+		members:    make(map[string]*member, len(cfg.Members)),
 	}
 	for _, mc := range cfg.Members {
 		p.members[mc.Name] = &member{
@@ -100,6 +105,23 @@ func (p *Pool) HasMember(service string) bool {
 
 // Snapshot returns the latest published pool state (lock-free).
 func (p *Pool) Snapshot() PoolSnapshot { return *p.snap.Load() }
+
+// QueuedCounts returns per-service queue depths, answered by the manager
+// so the numbers are exact, not racy reads.
+func (p *Pool) QueuedCounts() map[string]int {
+	reply := make(chan map[string]int, 1)
+	select {
+	case p.cmds <- depthCmd{reply: reply}:
+	case <-p.done:
+		return nil
+	}
+	select {
+	case depths := <-reply:
+		return depths
+	case <-p.done:
+		return nil
+	}
+}
 
 // Close stops the manager; queued waiters receive AdmitShutdown.
 func (p *Pool) Close() { p.closing.Do(func() { close(p.done) }) }
@@ -156,13 +178,19 @@ func (p *Pool) run() {
 				if m, ok := p.members[cmd.service]; ok {
 					m.removeByReply(cmd.reply)
 				}
+			case depthCmd:
+				depths := make(map[string]int, len(p.members))
+				for name, m := range p.members {
+					depths[name] = len(m.queue)
+				}
+				cmd.reply <- depths
 			}
 		case msg := <-p.swaps:
 			p.handleSwap(msg)
 		case tick := <-p.timers:
 			p.handleTick(tick)
-		case <-p.activity:
-			// Cooldown reset lands in the cooldown commit.
+		case svc := <-p.activity:
+			p.touch(svc)
 		case <-p.done:
 			p.shutdown()
 			return
@@ -181,6 +209,7 @@ func (p *Pool) handleAdmit(c admitCmd) {
 	// Re-check under serial ownership: the caller's snapshot was a hint.
 	if p.state == StateActive && p.active == c.service {
 		c.reply <- admitReply{result: AdmitGo}
+		p.touch(c.service)
 		return
 	}
 
@@ -192,7 +221,8 @@ func (p *Pool) handleAdmit(c admitCmd) {
 
 	switch p.state {
 	case StateIdle, StateError:
-		// Fast startup path (PRD §3.2): nothing to stop.
+		// Fast startup path (PRD §3.2): nothing known to be running.
+		// The swap worker still sweeps other members defensively.
 		p.startSwap(c.service)
 	case StateActive:
 		// Different service wants the GPU: respect the grace period.
@@ -206,31 +236,52 @@ func (p *Pool) handleAdmit(c admitCmd) {
 	}
 }
 
+// touch resets the idle cooldown for activity on the active service.
+// No reset happens while other services are queued (a grace-driven swap
+// is already pending — cooldown is irrelevant until it completes).
+func (p *Pool) touch(service string) {
+	if p.state != StateActive || p.active != service {
+		return
+	}
+	if p.cooldown > 0 && p.oldestQueued() == "" {
+		p.armTimer(tickCooldown, p.cooldown)
+	}
+}
+
 // startSwap transitions to SWAPPING and spawns the worker. The worker is
 // guaranteed to deliver exactly one terminal swapMsg, so SWAPPING cannot
 // get stuck.
 func (p *Pool) startSwap(target string) {
 	m := p.members[target]
-	stopContainer := ""
-	if p.state == StateActive && p.active != "" {
-		stopContainer = p.members[p.active].containerName
-	}
 	p.state = StateSwapping
 	p.active = ""
-	p.epoch++ // invalidate any pending grace/cooldown ticks
+	p.bumpEpochs() // invalidate any pending grace/cooldown ticks
 	p.opSeq++
 	p.publish()
-	p.log.Info("swap started", "target", target, "stopping", stopContainer)
-	go p.doSwap(p.opSeq, stopContainer, m)
+	others := p.otherContainers(target)
+	p.log.Info("swap started", "target", target)
+	go p.doSwap(p.opSeq, m, others)
+}
+
+// startStopAll transitions to SWAPPING for a cold-pool stop (cooldown
+// expiry with no default service).
+func (p *Pool) startStopAll() {
+	p.state = StateSwapping
+	p.active = ""
+	p.bumpEpochs()
+	p.opSeq++
+	p.publish()
+	p.log.Info("cooldown expired, stopping pool (cold)")
+	go p.doStopAll(p.opSeq)
 }
 
 func (p *Pool) handleSwap(msg swapMsg) {
 	if msg.op != p.opSeq {
 		return // stale worker from a superseded swap
 	}
-	m := p.members[msg.target]
 	switch msg.kind {
 	case swapComplete:
+		m := p.members[msg.target]
 		p.state = StateActive
 		p.active = msg.target
 		p.startedAt = p.clk.Now()
@@ -246,8 +297,15 @@ func (p *Pool) handleSwap(msg swapMsg) {
 			} else {
 				p.startSwap(next)
 			}
+			return
+		}
+		// Quiet pool: begin the idle countdown — unless the default
+		// service is the one running (it stays warm indefinitely).
+		if p.cooldown > 0 && !(p.defaultSvc != "" && p.active == p.defaultSvc) {
+			p.armTimer(tickCooldown, p.cooldown)
 		}
 	case swapFailed:
+		m := p.members[msg.target]
 		p.state = StateIdle
 		p.active = ""
 		p.publish()
@@ -255,6 +313,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		m.flush(admitReply{AdmitDockerError, msg.err})
 		p.chainNow()
 	case swapHealthTimeout:
+		m := p.members[msg.target]
 		// Best-effort teardown of the unhealthy container, off-loop.
 		go func(cn string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -270,12 +329,24 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		m.flush(admitReply{AdmitStartupTimeout,
 			fmt.Errorf("service %q failed its health check within %s", msg.target, m.startupTimeout)})
 		p.chainNow()
+	case poolStopped:
+		if msg.err != nil {
+			// Containers may straggle; the next swap's defensive sweep
+			// re-stops anything still running.
+			p.log.Error("cold-pool stop incomplete", "err", msg.err)
+		} else {
+			p.log.Info("pool is cold (0MB VRAM)")
+		}
+		p.state = StateIdle
+		p.active = ""
+		p.publish()
+		p.chainNow()
 	}
 }
 
 func (p *Pool) handleTick(tick timerTick) {
-	if tick.epoch != p.epoch {
-		return // superseded: a transition happened after arming
+	if tick.epoch != p.epochs[tick.kind] {
+		return // superseded: a newer arm or a transition happened
 	}
 	if p.state != StateActive {
 		return // never act on timers mid-swap
@@ -286,12 +357,22 @@ func (p *Pool) handleTick(tick timerTick) {
 			p.startSwap(next)
 		}
 	case tickCooldown:
-		// Lands in the cooldown commit.
+		if p.oldestQueued() != "" {
+			return // a grace-driven swap is pending; let it win
+		}
+		if p.defaultSvc != "" {
+			if p.active != p.defaultSvc {
+				p.log.Info("cooldown expired, swapping to default", "default", p.defaultSvc)
+				p.startSwap(p.defaultSvc)
+			}
+			return
+		}
+		p.startStopAll()
 	}
 }
 
 // chainNow starts a swap for the longest-waiting service, used after a
-// failure when nothing is running (no grace needed).
+// failure or cold stop when nothing is running (no grace needed).
 func (p *Pool) chainNow() {
 	if next := p.oldestQueued(); next != "" {
 		p.startSwap(next)
@@ -313,17 +394,35 @@ func (p *Pool) oldestQueued() string {
 	return best
 }
 
+// otherContainers lists every member container except target's, sorted
+// for deterministic stop ordering.
+func (p *Pool) otherContainers(target string) []string {
+	out := make([]string, 0, len(p.members)-1)
+	for name, m := range p.members {
+		if name != target {
+			out = append(out, m.containerName)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // armTimer schedules an epoch-guarded tick. The callback only enqueues a
 // message — all decisions stay in the manager loop.
 func (p *Pool) armTimer(kind timerKind, d time.Duration) {
-	p.epoch++
-	e := p.epoch
+	p.epochs[kind]++
+	e := p.epochs[kind]
 	p.clk.AfterFunc(d, func() {
 		select {
 		case p.timers <- timerTick{kind: kind, epoch: e}:
 		case <-p.done:
 		}
 	})
+}
+
+func (p *Pool) bumpEpochs() {
+	p.epochs[tickGrace]++
+	p.epochs[tickCooldown]++
 }
 
 func (p *Pool) publish() {

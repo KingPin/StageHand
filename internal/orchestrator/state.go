@@ -82,12 +82,20 @@ type cancelCmd struct {
 	reply   chan admitReply
 }
 
+// depthCmd asks the manager for per-service queue depths (status API).
+type depthCmd struct {
+	reply chan map[string]int
+}
+
 type swapKind int
 
 const (
 	swapComplete swapKind = iota
 	swapFailed
 	swapHealthTimeout
+	// poolStopped terminates a cold-pool stop transition (cooldown with
+	// no default service); target is empty and there is nothing to flush.
+	poolStopped
 )
 
 // swapMsg is the exactly-once terminal report from a swap worker.
@@ -107,6 +115,11 @@ const (
 
 // timerTick carries the epoch it was armed with; the manager drops ticks
 // whose epoch is stale, which is what makes timer reuse race-free.
+//
+// Epochs are PER KIND: resetting the cooldown (every request) must not
+// invalidate a pending grace tick that queued waiters depend on, and
+// arming a grace timer must not cancel the idle cooldown countdown.
+// Transitions (swaps) bump both.
 type timerTick struct {
 	kind  timerKind
 	epoch uint64

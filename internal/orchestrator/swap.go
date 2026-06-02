@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -17,11 +18,16 @@ const (
 	dockerCallDeadline = 30 * time.Second
 )
 
-// doSwap is the swap worker: stop (optional) → confirm exited → start →
-// health poll. It runs OFF the manager goroutine and reports exactly one
-// terminal swapMsg — including on panic — so the pool can never wedge in
-// SWAPPING.
-func (p *Pool) doSwap(op uint64, stopContainer string, m *member) {
+// doSwap is the swap worker: sweep-stop any running pool sibling →
+// confirm exited → start target → health poll. It runs OFF the manager
+// goroutine and reports exactly one terminal swapMsg — including on
+// panic — so the pool can never wedge in SWAPPING.
+//
+// Sweeping ALL siblings (not just the last known active) makes every
+// swap self-healing: containers left running by a failed stop or
+// out-of-band meddling are cleaned up before the target starts, which
+// is what ultimately enforces the pool's mutual exclusion.
+func (p *Pool) doSwap(op uint64, m *member, others []string) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed,
@@ -29,8 +35,16 @@ func (p *Pool) doSwap(op uint64, stopContainer string, m *member) {
 		}
 	}()
 
-	if stopContainer != "" {
-		if err := p.stopAndConfirm(stopContainer); err != nil {
+	for _, cn := range others {
+		running, err := p.isRunning(cn)
+		if err != nil {
+			p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed, err: err})
+			return
+		}
+		if !running {
+			continue
+		}
+		if err := p.stopAndConfirm(cn); err != nil {
 			p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed, err: err})
 			return
 		}
@@ -61,6 +75,45 @@ func (p *Pool) doSwap(op uint64, stopContainer string, m *member) {
 	}
 }
 
+// doStopAll is the cold-pool worker: stop every running member container
+// (cooldown expiry with default_service null).
+func (p *Pool) doStopAll(op uint64) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.deliver(swapMsg{op: op, kind: poolStopped,
+				err: fmt.Errorf("stop-all worker panic: %v", r)})
+		}
+	}()
+
+	var firstErr error
+	for _, m := range p.sortedMembers() {
+		running, err := p.isRunning(m.containerName)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if !running {
+			continue
+		}
+		if err := p.stopAndConfirm(m.containerName); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	p.deliver(swapMsg{op: op, kind: poolStopped, err: firstErr})
+}
+
+func (p *Pool) isRunning(containerName string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
+	defer cancel()
+	info, err := p.docker.InspectByName(ctx, containerName)
+	if err != nil {
+		return false, fmt.Errorf("inspecting %q: %w", containerName, err)
+	}
+	return info.Running, nil
+}
+
 // stopAndConfirm stops a container gracefully and waits until Docker
 // reports it exited (PRD §3.2 step 3).
 func (p *Pool) stopAndConfirm(containerName string) error {
@@ -73,13 +126,11 @@ func (p *Pool) stopAndConfirm(containerName string) error {
 
 	deadline := p.clk.Now().Add(stopConfirmBudget)
 	for {
-		ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
-		info, err := p.docker.InspectByName(ctx, containerName)
-		cancel()
+		running, err := p.isRunning(containerName)
 		if err != nil {
-			return fmt.Errorf("confirming stop of %q: %w", containerName, err)
+			return fmt.Errorf("confirming stop: %w", err)
 		}
-		if !info.Running {
+		if !running {
 			return nil
 		}
 		if !p.clk.Now().Before(deadline) {
@@ -89,6 +140,20 @@ func (p *Pool) stopAndConfirm(containerName string) error {
 			return fmt.Errorf("pool shutting down")
 		}
 	}
+}
+
+// sortedMembers returns members in deterministic name order.
+func (p *Pool) sortedMembers() []*member {
+	names := make([]string, 0, len(p.members))
+	for n := range p.members {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	out := make([]*member, len(names))
+	for i, n := range names {
+		out[i] = p.members[n]
+	}
+	return out
 }
 
 // sleep waits d on the pool's clock, returning false on pool shutdown.
