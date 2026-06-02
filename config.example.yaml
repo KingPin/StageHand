@@ -1,0 +1,68 @@
+# StageHand example configuration — see PRD.md §2 for full semantics.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  docker_socket_path: "/var/run/docker.sock"
+  cors_allowed_origins: ["*"]     # Allowed origins for web-UI integrations
+  max_queue_size: 100             # Default per-service queue bound
+
+# Mutual Exclusion Pools — at most one member container runs at a time.
+vram_pools:
+  gpu_0_vram:
+    grace_period_seconds: 60      # Min run-time before a container may be swapped out
+    cooldown_seconds: 300         # Idle time before stopping active containers (0 disables)
+    default_service: null         # null = spin down ALL containers when idle (Cold Pool)
+
+# Declared Services (AI Backends). target_url hosts are container names on a
+# shared user-defined Docker network.
+services:
+  comfyui:
+    container_name: "comfyui-stable"
+    target_url: "http://comfyui-stable:8188"
+    health_path: "/"
+    startup_timeout_seconds: 180
+    vram_pool: "gpu_0_vram"
+
+  llama-moe:
+    container_name: "llama-cpp-moe"
+    target_url: "http://llama-cpp-moe:8081"
+    health_path: "/health"
+    startup_timeout_seconds: 240
+    max_queue_size: 50            # Optional per-service queue override
+    vram_pool: "gpu_0_vram"       # Mutually exclusive with comfyui
+
+  embeddings-cpu:
+    container_name: "llama-embeddings"
+    target_url: "http://llama-embeddings:8082"
+    health_path: "/health"
+    vram_pool: null               # Always-On CPU service (bypasses pool logic)
+
+  whisper-stt:
+    container_name: "faster-whisper"
+    target_url: "http://faster-whisper:8084"
+    health_path: "/v1/models"
+    vram_pool: null
+
+# Routing rules — evaluated in order, first match wins.
+routes:
+  - path_prefix: "/v1/embeddings"
+    service: "embeddings-cpu"
+
+  - path_prefix: "/v1/audio"
+    service: "whisper-stt"
+
+  # Body-based model routing: the JSON body's "model" field selects the
+  # service; "service" is the fallback when no model entry matches.
+  - path_prefix: "/v1/chat/completions"
+    models:
+      "qwen-moe": "llama-moe"
+      "flux": "comfyui"
+    service: "llama-moe"
+
+  - path_prefix: "/v1/images"
+    service: "comfyui"
+
+  # WebSocket routes tunnel transparently.
+  - path_prefix: "/ws"
+    service: "comfyui"
