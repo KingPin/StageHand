@@ -430,6 +430,16 @@ func (p *Pool) chainAfterTerminal(activated bool) {
 	if activated && p.cooldown > 0 && !(p.defaultSvc != "" && p.active == p.defaultSvc) {
 		p.lastActivity = p.clk.Now()
 		p.armTimer(tickCooldown, p.cooldown)
+		return
+	}
+
+	// A failed swap left a default-service pool cold: retry on the
+	// cooldown cadence (bounded — one start attempt per period) so the
+	// warm-default behavior recovers without traffic. External stops
+	// (ERROR state) deliberately do NOT retry: `docker stop` by an
+	// operator should stick.
+	if !activated && p.state == StateIdle && p.defaultSvc != "" && p.cooldown > 0 {
+		p.armTimer(tickCooldown, p.cooldown)
 	}
 }
 
@@ -504,15 +514,27 @@ func (p *Pool) handleTick(tick timerTick) {
 	if tick.epoch != p.epochs[tick.kind] {
 		return // superseded: a newer arm or a transition happened
 	}
-	if p.state != StateActive {
-		return // never act on timers mid-swap
-	}
 	switch tick.kind {
 	case tickGrace:
+		if p.state != StateActive {
+			return // never act on timers mid-swap
+		}
 		if next := p.oldestQueued(); next != "" {
 			p.startSwap(next)
 		}
 	case tickCooldown:
+		if p.state == StateIdle {
+			// Retry tick (armed after a failed swap to the default):
+			// bring the warm default back without waiting for traffic.
+			if p.defaultSvc != "" && p.oldestQueued() == "" {
+				p.log.Info("retrying default service after earlier failure", "default", p.defaultSvc)
+				p.startSwap(p.defaultSvc)
+			}
+			return
+		}
+		if p.state != StateActive {
+			return // never act on timers mid-swap
+		}
 		if p.oldestQueued() != "" {
 			// A grace-driven swap is pending; defer the whole period so
 			// the countdown survives even if those waiters cancel.

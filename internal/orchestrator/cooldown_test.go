@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -117,6 +118,33 @@ func TestCooldownSurvivesCanceledQueuedSwap(t *testing.T) {
 	})
 	if running := tp.docker.Running(); len(running) != 0 {
 		t.Errorf("running = %v, want none", running)
+	}
+}
+
+// TestDefaultServiceRetriesAfterFailedSwap: a default_service pool that
+// fails its cooldown swap must retry on the cooldown cadence rather
+// than staying cold until traffic arrives.
+func TestDefaultServiceRetriesAfterFailedSwap(t *testing.T) {
+	mock := clock.NewMock()
+	tp := newTestPoolOpts(t, mock, tpOpts{cooldown: 5 * time.Minute, defaultSvc: "alpha"})
+	mustAdmit(t, tp.pool, "beta")
+
+	// First cooldown expiry: the swap to default alpha fails to start.
+	boom := errors.New("registry unavailable")
+	tp.docker.SetStartErr("alpha-c", boom)
+	advanceUntil(t, mock, 30*time.Second, "failed default swap", func() bool {
+		return slices.Contains(tp.docker.Calls(), "start:alpha-c") &&
+			tp.pool.Snapshot().State == StateIdle
+	})
+
+	// Docker recovers; the retry tick must bring the default back warm.
+	tp.docker.SetStartErr("alpha-c", nil)
+	advanceUntil(t, mock, 30*time.Second, "default retried and active", func() bool {
+		s := tp.pool.Snapshot()
+		return s.State == StateActive && s.ActiveService == "alpha"
+	})
+	if running := tp.docker.Running(); !slices.Equal(running, []string{"alpha-c"}) {
+		t.Errorf("running = %v, want only alpha-c", running)
 	}
 }
 
