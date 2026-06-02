@@ -11,18 +11,22 @@ import (
 // handle is the unified request flow (PRD §4): CORS → reserved namespace
 // → route match (with body-model peek) → pool admission → forward.
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	// One atomic load: this request lives in this config revision even
+	// if a reload lands mid-flight.
+	rt := s.rt.Load()
+
 	if r.Method == http.MethodOptions {
-		s.preflight(w, r)
+		preflight(w, r, rt.corsOrigins)
 		return
 	}
-	s.setCORSOrigin(w, r)
+	setCORSOrigin(w, r, rt.corsOrigins)
 
 	if strings.HasPrefix(r.URL.Path, "/stagehand/") {
-		s.handleStageHand(w, r)
+		s.handleStageHand(w, r, rt)
 		return
 	}
 
-	match, ok := s.router.Match(r.URL.Path, r.Header, "")
+	match, ok := rt.router.Match(r.URL.Path, r.Header, "")
 	if ok && match.NeedsModel && r.Method == http.MethodPost && hasJSONBody(r) {
 		model, err := proxy.PeekModel(r)
 		if err != nil {
@@ -30,15 +34,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if model != "" {
-			match, ok = s.router.Match(r.URL.Path, r.Header, model)
+			match, ok = rt.router.Match(r.URL.Path, r.Header, model)
 		}
 	}
 	if !ok {
-		writeUnmatched(w, s.router.KnownRoutes())
+		writeUnmatched(w, rt.router.KnownRoutes())
 		return
 	}
 
-	svc, exists := s.services[match.Service]
+	svc, exists := rt.services[match.Service]
 	if !exists { // config validation prevents this; defend anyway
 		writeError(w, http.StatusInternalServerError, "route target missing",
 			"service "+match.Service+" is not configured")

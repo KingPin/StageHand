@@ -26,7 +26,7 @@ type runRig struct {
 // newRunRig serves a real listener via Server.Run for lifecycle tests.
 func newRunRig(t *testing.T, maxQueue int) *runRig {
 	t.Helper()
-	srv, docker, backends := newRigParts(t, maxQueue)
+	srv, docker, backends, _ := newRigParts(t, maxQueue)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

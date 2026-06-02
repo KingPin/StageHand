@@ -8,8 +8,8 @@ import (
 // preflight answers OPTIONS immediately (PRD §5.3): the configured
 // origin is echoed and the browser's requested headers are allowed
 // verbatim — '*' breaks credentialed requests, echoing does not.
-func (s *Server) preflight(w http.ResponseWriter, r *http.Request) {
-	if origin := s.allowedOrigin(r); origin != "" {
+func preflight(w http.ResponseWriter, r *http.Request, allowed []string) {
+	if origin := allowedOrigin(r, allowed); origin != "" {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
 		h.Set("Vary", "Origin")
@@ -25,8 +25,8 @@ func (s *Server) preflight(w http.ResponseWriter, r *http.Request) {
 }
 
 // setCORSOrigin marks non-preflight responses so browsers accept them.
-func (s *Server) setCORSOrigin(w http.ResponseWriter, r *http.Request) {
-	if origin := s.allowedOrigin(r); origin != "" {
+func setCORSOrigin(w http.ResponseWriter, r *http.Request, allowed []string) {
+	if origin := allowedOrigin(r, allowed); origin != "" {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 	}
@@ -34,12 +34,12 @@ func (s *Server) setCORSOrigin(w http.ResponseWriter, r *http.Request) {
 
 // allowedOrigin returns the origin to echo, or "" when CORS headers
 // should be omitted (no Origin header, or origin not allowed).
-func (s *Server) allowedOrigin(r *http.Request) string {
+func allowedOrigin(r *http.Request, allowed []string) string {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return ""
 	}
-	if slices.Contains(s.corsOrigins, "*") || slices.Contains(s.corsOrigins, origin) {
+	if slices.Contains(allowed, "*") || slices.Contains(allowed, origin) {
 		return origin
 	}
 	return ""

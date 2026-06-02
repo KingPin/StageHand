@@ -92,6 +92,16 @@ func (w *Watcher) Register(containerName string, p *Pool) {
 	w.routes[containerName] = p
 }
 
+// ReplaceAll swaps the entire routing table (hot config reload).
+func (w *Watcher) ReplaceAll(routes map[string]*Pool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.routes = make(map[string]*Pool, len(routes))
+	for k, v := range routes {
+		w.routes[k] = v
+	}
+}
+
 // Run consumes the events stream until ctx is cancelled, resubscribing
 // with backoff if the stream errors.
 func (w *Watcher) Run(ctx context.Context) {

@@ -26,17 +26,26 @@ import (
 // raw lines after an upgrade, anything else identifies itself and echoes
 // the request body.
 type backend struct {
-	name     string
-	healthOK atomic.Bool
-	srv      *httptest.Server
+	name          string
+	healthOK      atomic.Bool
+	streamRelease chan struct{} // closing releases the second stream chunk
+	srv           *httptest.Server
 }
 
 func newBackend(t *testing.T, name string) *backend {
 	t.Helper()
-	b := &backend{name: name}
+	b := &backend{name: name, streamRelease: make(chan struct{})}
 	b.healthOK.Store(true)
 	b.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.Contains(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Type", "text/event-stream")
+			fl := w.(http.Flusher)
+			fmt.Fprintf(w, "data: %s-chunk-1\n\n", b.name)
+			fl.Flush()
+			<-b.streamRelease
+			fmt.Fprintf(w, "data: %s-chunk-2\n\n", b.name)
+			fl.Flush()
 		case r.URL.Path == "/health":
 			if b.healthOK.Load() {
 				w.WriteHeader(http.StatusOK)
@@ -71,13 +80,14 @@ type testRig struct {
 	server   *Server
 	docker   *dockerctl.FakeClient
 	backends map[string]*backend
+	cfg      *config.Config
 }
 
 func ptr(s string) *string { return &s }
 
 // newRigParts builds the server runtime: pooled alpha/beta on gpu0 +
 // always-on gamma, with model routing on /v1/chat/completions.
-func newRigParts(t *testing.T, maxQueue int) (*Server, *dockerctl.FakeClient, map[string]*backend) {
+func newRigParts(t *testing.T, maxQueue int) (*Server, *dockerctl.FakeClient, map[string]*backend, *config.Config) {
 	t.Helper()
 	backends := map[string]*backend{}
 	for _, n := range []string{"alpha", "beta", "gamma"} {
@@ -116,15 +126,15 @@ func newRigParts(t *testing.T, maxQueue int) (*Server, *dockerctl.FakeClient, ma
 		t.Fatalf("server.New: %v", err)
 	}
 	t.Cleanup(srv.Close)
-	return srv, docker, backends
+	return srv, docker, backends, cfg
 }
 
 func newRig(t *testing.T, maxQueue int) *testRig {
 	t.Helper()
-	srv, docker, backends := newRigParts(t, maxQueue)
+	srv, docker, backends, cfg := newRigParts(t, maxQueue)
 	front := httptest.NewServer(srv.Handler())
 	t.Cleanup(front.Close)
-	return &testRig{front: front, server: srv, docker: docker, backends: backends}
+	return &testRig{front: front, server: srv, docker: docker, backends: backends, cfg: cfg}
 }
 
 func waitFor(t *testing.T, what string, cond func() bool) {

@@ -16,16 +16,19 @@ import (
 //	GET  /stagehand/status            — orchestrator state
 //	POST /stagehand/swap/{service}    — pre-warm/force a swap
 //	POST /stagehand/pool/{pool}/stop  — force a pool cold
-func (s *Server) handleStageHand(w http.ResponseWriter, r *http.Request) {
+//	POST /stagehand/reload            — hot config reload
+func (s *Server) handleStageHand(w http.ResponseWriter, r *http.Request, rt *runtime) {
 	path := r.URL.Path
 	switch {
 	case r.Method == http.MethodGet && path == "/stagehand/status":
-		s.handleStatus(w, r)
+		s.handleStatus(w, r, rt)
+	case r.Method == http.MethodPost && path == "/stagehand/reload":
+		s.handleReload(w)
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/stagehand/swap/"):
-		s.handleAdminSwap(w, strings.TrimPrefix(path, "/stagehand/swap/"))
+		handleAdminSwap(w, rt, strings.TrimPrefix(path, "/stagehand/swap/"))
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/stagehand/pool/") && strings.HasSuffix(path, "/stop"):
 		name := strings.TrimSuffix(strings.TrimPrefix(path, "/stagehand/pool/"), "/stop")
-		s.handleAdminPoolStop(w, name)
+		handleAdminPoolStop(w, rt, name)
 	default:
 		writeError(w, http.StatusNotFound, "unknown stagehand endpoint", path)
 	}
@@ -45,15 +48,15 @@ type statusJSON struct {
 	AlwaysOnHealthy map[string]string         `json:"always_on_services"`
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, rt *runtime) {
 	out := statusJSON{
 		Status:          "healthy",
 		Version:         version.Version,
-		VRAMPools:       make(map[string]poolStatusJSON, len(s.pools)),
+		VRAMPools:       make(map[string]poolStatusJSON, len(rt.pools)),
 		AlwaysOnHealthy: map[string]string{},
 	}
 
-	for name, p := range s.pools {
+	for name, p := range rt.pools {
 		st := p.Status()
 		j := poolStatusJSON{
 			State:               st.State.String(),
@@ -72,7 +75,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	for name, svc := range s.services {
+	for name, svc := range rt.services {
 		if svc.pool != nil {
 			continue
 		}
@@ -93,6 +96,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+func (s *Server) handleReload(w http.ResponseWriter) {
+	if err := s.ReloadFromSource(); err != nil {
+		writeError(w, http.StatusBadRequest, "reload failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
+}
+
 // probeHealth checks an always-on service's health endpoint.
 func probeHealth(ctx context.Context, url string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -107,8 +118,8 @@ func probeHealth(ctx context.Context, url string) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func (s *Server) handleAdminSwap(w http.ResponseWriter, serviceName string) {
-	svc, ok := s.services[serviceName]
+func handleAdminSwap(w http.ResponseWriter, rt *runtime, serviceName string) {
+	svc, ok := rt.services[serviceName]
 	if !ok || svc.pool == nil {
 		writeError(w, http.StatusNotFound, "unknown pooled service", serviceName)
 		return
@@ -121,8 +132,8 @@ func (s *Server) handleAdminSwap(w http.ResponseWriter, serviceName string) {
 	writeJSON(w, status, map[string]string{"service": serviceName, "result": string(outcome)})
 }
 
-func (s *Server) handleAdminPoolStop(w http.ResponseWriter, poolName string) {
-	pool, ok := s.pools[poolName]
+func handleAdminPoolStop(w http.ResponseWriter, rt *runtime, poolName string) {
+	pool, ok := rt.pools[poolName]
 	if !ok {
 		writeError(w, http.StatusNotFound, "unknown pool", poolName)
 		return
