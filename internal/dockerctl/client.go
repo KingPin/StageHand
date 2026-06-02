@@ -57,7 +57,12 @@ type realClient struct {
 var _ Client = (*realClient)(nil)
 
 // Connect builds a Client for the Docker daemon at the given unix socket
-// path. API version negotiation is automatic.
+// path.
+//
+// API version negotiation is automatic: github.com/moby/moby/client
+// enables it by default in moby.New (its WithAPIVersionNegotiation
+// option is documented as a deprecated no-op), satisfying the PRD's
+// negotiated-compatibility requirement without any extra option.
 func Connect(socketPath string) (Client, error) {
 	cli, err := moby.New(moby.WithHost("unix://" + socketPath))
 	if err != nil {
