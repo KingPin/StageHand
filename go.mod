@@ -3,6 +3,7 @@ module github.com/KingPin/StageHand
 go 1.26
 
 require (
+	github.com/benbjohnson/clock v1.3.5
 	github.com/containerd/errdefs v1.0.0
 	github.com/moby/moby/client v0.4.1
 	gopkg.in/yaml.v3 v3.0.1
