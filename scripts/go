@@ -1,0 +1,16 @@
+#!/bin/sh
+# Run the Go toolchain in Docker — no local Go installation required.
+# Usage: scripts/go <go-args>     e.g.  scripts/go test -race ./...
+# Caches modules/builds under ~/.cache/stagehand-go so runs stay fast.
+set -e
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+CACHE="${HOME}/.cache/stagehand-go"
+mkdir -p "$CACHE/mod" "$CACHE/build"
+exec docker run --rm \
+  -u "$(id -u):$(id -g)" \
+  -v "$REPO":/src -w /src \
+  -v "$CACHE/mod":/go/pkg/mod \
+  -v "$CACHE/build":/.cache/go-build \
+  -e GOCACHE=/.cache/go-build \
+  -e GOFLAGS=-buildvcs=false \
+  golang:1.26 go "$@"
