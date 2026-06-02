@@ -55,16 +55,22 @@ type Pool struct {
 	ops      *opRegistry // self-initiated op expectations (shared w/ workers)
 
 	// --- manager-goroutine-private state: NEVER touched elsewhere ---
-	state            PoolState
-	active           string
-	target           string // swap target while SWAPPING
-	adminPending     string // operator-requested swap chained behind one in flight
-	startedAt        time.Time
-	cooldownDeadline time.Time // display-only; authority is the epoch-guarded tick
-	members          map[string]*member
-	epochs           [2]uint64 // per timerKind; bumps invalidate in-flight ticks
-	opSeq            uint64    // bumps identify the current swap worker
-	seq              uint64    // waiter ordering across services
+	state        PoolState
+	active       string
+	target       string // swap target while SWAPPING
+	adminPending string // operator-requested swap chained behind one in flight
+	startedAt    time.Time
+	// lastActivity feeds the cooldown WITHOUT re-arming a timer per
+	// request: traffic only writes this field, and the (single) armed
+	// cooldown tick re-schedules itself for the remaining idle time.
+	// Arming a fresh AfterFunc per request would leak rps×cooldown live
+	// timers into the runtime heap.
+	lastActivity  time.Time
+	cooldownArmed bool
+	members       map[string]*member
+	epochs        [2]uint64 // per timerKind; bumps invalidate in-flight ticks
+	opSeq         uint64    // bumps identify the current swap worker
+	seq           uint64    // waiter ordering across services
 }
 
 // NewPool builds the pool and starts its manager goroutine.
@@ -300,15 +306,11 @@ func (p *Pool) handleAdmit(c admitCmd) {
 	}
 }
 
-// touch resets the idle cooldown for activity on the active service.
-// No reset happens while other services are queued (a grace-driven swap
-// is already pending — cooldown is irrelevant until it completes).
+// touch records activity on the active service. The cooldown tick reads
+// lastActivity when it fires and defers itself — no timer work here.
 func (p *Pool) touch(service string) {
-	if p.state != StateActive || p.active != service {
-		return
-	}
-	if p.cooldown > 0 && p.oldestQueued() == "" {
-		p.armTimer(tickCooldown, p.cooldown)
+	if p.state == StateActive && p.active == service {
+		p.lastActivity = p.clk.Now()
 	}
 }
 
@@ -426,6 +428,7 @@ func (p *Pool) chainAfterTerminal(activated bool) {
 	// Quiet pool: begin the idle countdown — unless the default service
 	// is the one running (it stays warm indefinitely).
 	if activated && p.cooldown > 0 && !(p.defaultSvc != "" && p.active == p.defaultSvc) {
+		p.lastActivity = p.clk.Now()
 		p.armTimer(tickCooldown, p.cooldown)
 	}
 }
@@ -485,9 +488,13 @@ func (p *Pool) buildStatus() PoolStatus {
 	for _, m := range p.members {
 		st.QueuedRequests += len(m.queue)
 	}
-	if p.state == StateActive && !p.cooldownDeadline.IsZero() {
-		if remaining := p.cooldownDeadline.Sub(p.clk.Now()); remaining > 0 {
+	if p.state == StateActive && p.cooldownArmed {
+		// Effective expiry tracks last activity, mirroring the tick's
+		// self-extension logic.
+		if remaining := p.lastActivity.Add(p.cooldown).Sub(p.clk.Now()); remaining > 0 {
 			st.SecondsUntilCooldown = int64(remaining.Seconds())
+		} else {
+			st.SecondsUntilCooldown = 0
 		}
 	}
 	return st
@@ -507,7 +514,15 @@ func (p *Pool) handleTick(tick timerTick) {
 		}
 	case tickCooldown:
 		if p.oldestQueued() != "" {
-			return // a grace-driven swap is pending; let it win
+			// A grace-driven swap is pending; defer the whole period so
+			// the countdown survives even if those waiters cancel.
+			p.armTimer(tickCooldown, p.cooldown)
+			return
+		}
+		if idle := p.clk.Since(p.lastActivity); idle < p.cooldown {
+			// Traffic arrived since arming: extend by the remainder.
+			p.armTimer(tickCooldown, p.cooldown-idle)
+			return
 		}
 		if p.defaultSvc != "" {
 			if p.active != p.defaultSvc {
@@ -562,7 +577,7 @@ func (p *Pool) armTimer(kind timerKind, d time.Duration) {
 	p.epochs[kind]++
 	e := p.epochs[kind]
 	if kind == tickCooldown {
-		p.cooldownDeadline = p.clk.Now().Add(d) // display-only (status API)
+		p.cooldownArmed = true
 	}
 	p.clk.AfterFunc(d, func() {
 		select {
@@ -575,7 +590,7 @@ func (p *Pool) armTimer(kind timerKind, d time.Duration) {
 func (p *Pool) bumpEpochs() {
 	p.epochs[tickGrace]++
 	p.epochs[tickCooldown]++
-	p.cooldownDeadline = time.Time{}
+	p.cooldownArmed = false
 }
 
 func (p *Pool) publish() {

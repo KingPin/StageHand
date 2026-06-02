@@ -81,6 +81,45 @@ func TestCooldownSwapsToDefaultService(t *testing.T) {
 	}
 }
 
+// TestCooldownSurvivesCanceledQueuedSwap: a cooldown tick that yields to
+// queued waiters must re-arm; if those waiters later cancel, the pool
+// must still go cold instead of staying warm forever.
+func TestCooldownSurvivesCanceledQueuedSwap(t *testing.T) {
+	mock := clock.NewMock()
+	tp := newTestPoolOpts(t, mock, tpOpts{
+		grace:    60 * time.Second,
+		cooldown: 30 * time.Second,
+	})
+	mustAdmit(t, tp.pool, "alpha")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan AdmitResult, 1)
+	go func() {
+		r, _ := tp.pool.Admit(ctx, "beta")
+		done <- r
+	}()
+	waitFor(t, "beta queued", func() bool {
+		return tp.pool.QueuedCounts()["beta"] == 1
+	})
+
+	// Cooldown fires mid-grace-wait and must defer (queue non-empty).
+	mock.Add(35 * time.Second)
+	time.Sleep(20 * time.Millisecond)
+
+	cancel() // beta gives up before the grace swap happens
+	if r := <-done; r != AdmitCanceled {
+		t.Fatalf("beta admit = %v, want AdmitCanceled", r)
+	}
+
+	// With no traffic and no queue, the pool must still cool down.
+	advanceUntil(t, mock, 10*time.Second, "cold pool after cancel", func() bool {
+		return tp.pool.Snapshot().State == StateIdle
+	})
+	if running := tp.docker.Running(); len(running) != 0 {
+		t.Errorf("running = %v, want none", running)
+	}
+}
+
 func TestCooldownZeroDisablesIdleHandling(t *testing.T) {
 	mock := clock.NewMock()
 	tp := newTestPoolOpts(t, mock, tpOpts{cooldown: 0})
