@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -11,27 +10,32 @@ import (
 	"github.com/KingPin/StageHand/internal/version"
 )
 
-// handleStageHand serves the reserved /stagehand/* namespace (PRD §5):
+// buildAdminMux serves the reserved /stagehand/* namespace (PRD §5)
+// with method+wildcard patterns; each handler loads the current runtime
+// itself, so admin calls always see the latest config revision.
 //
 //	GET  /stagehand/status            — orchestrator state
 //	POST /stagehand/swap/{service}    — pre-warm/force a swap
 //	POST /stagehand/pool/{pool}/stop  — force a pool cold
 //	POST /stagehand/reload            — hot config reload
-func (s *Server) handleStageHand(w http.ResponseWriter, r *http.Request, rt *runtime) {
-	path := r.URL.Path
-	switch {
-	case r.Method == http.MethodGet && path == "/stagehand/status":
-		s.handleStatus(w, r, rt)
-	case r.Method == http.MethodPost && path == "/stagehand/reload":
+func (s *Server) buildAdminMux() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /stagehand/status", func(w http.ResponseWriter, r *http.Request) {
+		s.handleStatus(w, r, s.rt.Load())
+	})
+	mux.HandleFunc("POST /stagehand/reload", func(w http.ResponseWriter, _ *http.Request) {
 		s.handleReload(w)
-	case r.Method == http.MethodPost && strings.HasPrefix(path, "/stagehand/swap/"):
-		handleAdminSwap(w, rt, strings.TrimPrefix(path, "/stagehand/swap/"))
-	case r.Method == http.MethodPost && strings.HasPrefix(path, "/stagehand/pool/") && strings.HasSuffix(path, "/stop"):
-		name := strings.TrimSuffix(strings.TrimPrefix(path, "/stagehand/pool/"), "/stop")
-		handleAdminPoolStop(w, rt, name)
-	default:
-		writeError(w, http.StatusNotFound, "unknown stagehand endpoint", path)
-	}
+	})
+	mux.HandleFunc("POST /stagehand/swap/{service}", func(w http.ResponseWriter, r *http.Request) {
+		handleAdminSwap(w, s.rt.Load(), r.PathValue("service"))
+	})
+	mux.HandleFunc("POST /stagehand/pool/{pool}/stop", func(w http.ResponseWriter, r *http.Request) {
+		handleAdminPoolStop(w, s.rt.Load(), r.PathValue("pool"))
+	})
+	mux.HandleFunc("/stagehand/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "unknown stagehand endpoint", r.URL.Path)
+	})
+	return mux
 }
 
 type poolStatusJSON struct {

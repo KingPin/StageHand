@@ -58,6 +58,7 @@ type Server struct {
 	rt       atomic.Pointer[runtime]
 	reloadMu sync.Mutex // serializes Reload; handlers stay lock-free
 	cfgPath  string     // source for ReloadFromSource ("" = disabled)
+	adminMux *http.ServeMux
 }
 
 // New builds the full runtime from a validated config: one orchestrator
@@ -77,6 +78,7 @@ func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog
 	}
 	s.rt.Store(rt)
 	s.syncWatcher(rt)
+	s.adminMux = s.buildAdminMux()
 	return s, nil
 }
 

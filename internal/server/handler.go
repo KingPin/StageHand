@@ -24,7 +24,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	setCORSOrigin(w, r, rt.corsOrigins)
 
 	if strings.HasPrefix(r.URL.Path, "/stagehand/") {
-		s.handleStageHand(w, r, rt)
+		s.adminMux.ServeHTTP(w, r)
 		return
 	}
 
