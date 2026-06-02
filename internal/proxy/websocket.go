@@ -115,13 +115,9 @@ func Tunnel(w http.ResponseWriter, r *http.Request, target *url.URL, tracker *Co
 		_, err := io.Copy(client, backend)
 		errc <- err
 	}()
-	go func() { // client -> backend (drain any bytes already buffered)
-		var src io.Reader = client
-		if n := clientBuf.Reader.Buffered(); n > 0 {
-			peeked, _ := clientBuf.Reader.Peek(n)
-			src = io.MultiReader(strings.NewReader(string(peeked)), client)
-		}
-		_, err := io.Copy(backend, src)
+	go func() { // client -> backend; the bufio.Reader drains any bytes
+		// buffered during hijack, then reads the conn directly.
+		_, err := io.Copy(backend, clientBuf.Reader)
 		errc <- err
 	}()
 
