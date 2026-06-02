@@ -87,6 +87,13 @@ type depthCmd struct {
 	reply chan map[string]int
 }
 
+// extEvent is an external (not self-initiated) container lifecycle
+// change observed on the Docker events stream.
+type extEvent struct {
+	container string
+	action    string // "start", "die", "stop", "kill"
+}
+
 type swapKind int
 
 const (

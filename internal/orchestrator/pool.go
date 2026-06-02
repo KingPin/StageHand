@@ -45,16 +45,19 @@ type Pool struct {
 	log        *slog.Logger
 
 	snap     atomic.Pointer[PoolSnapshot]
-	cmds     chan any       // admitCmd | cancelCmd
+	cmds     chan any       // admitCmd | cancelCmd | depthCmd
 	swaps    chan swapMsg   // terminal reports from swap workers
 	timers   chan timerTick // epoch-guarded grace/cooldown ticks
 	activity chan string    // fast-path pings (cooldown reset)
+	dockerEv chan extEvent  // external container changes (watcher)
 	done     chan struct{}
 	closing  sync.Once
+	ops      *opRegistry // self-initiated op expectations (shared w/ workers)
 
 	// --- manager-goroutine-private state: NEVER touched elsewhere ---
 	state     PoolState
 	active    string
+	target    string // swap target while SWAPPING
 	startedAt time.Time
 	members   map[string]*member
 	epochs    [2]uint64 // per timerKind; bumps invalidate in-flight ticks
@@ -76,7 +79,9 @@ func NewPool(cfg PoolConfig, docker dockerctl.Client, clk clock.Clock, log *slog
 		swaps:      make(chan swapMsg, 4),
 		timers:     make(chan timerTick, 8),
 		activity:   make(chan string, 64),
+		dockerEv:   make(chan extEvent, 16),
 		done:       make(chan struct{}),
+		ops:        newOpRegistry(clk),
 		state:      StateIdle,
 		members:    make(map[string]*member, len(cfg.Members)),
 	}
@@ -191,6 +196,8 @@ func (p *Pool) run() {
 			p.handleTick(tick)
 		case svc := <-p.activity:
 			p.touch(svc)
+		case ev := <-p.dockerEv:
+			p.handleExternalEvent(ev)
 		case <-p.done:
 			p.shutdown()
 			return
@@ -255,6 +262,7 @@ func (p *Pool) startSwap(target string) {
 	m := p.members[target]
 	p.state = StateSwapping
 	p.active = ""
+	p.target = target
 	p.bumpEpochs() // invalidate any pending grace/cooldown ticks
 	p.opSeq++
 	p.publish()
@@ -268,6 +276,7 @@ func (p *Pool) startSwap(target string) {
 func (p *Pool) startStopAll() {
 	p.state = StateSwapping
 	p.active = ""
+	p.target = ""
 	p.bumpEpochs()
 	p.opSeq++
 	p.publish()
@@ -284,6 +293,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		m := p.members[msg.target]
 		p.state = StateActive
 		p.active = msg.target
+		p.target = ""
 		p.startedAt = p.clk.Now()
 		p.publish()
 		p.log.Info("swap complete", "active", msg.target)
@@ -308,6 +318,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		m := p.members[msg.target]
 		p.state = StateIdle
 		p.active = ""
+		p.target = ""
 		p.publish()
 		p.log.Error("swap failed", "target", msg.target, "err", msg.err)
 		m.flush(admitReply{AdmitDockerError, msg.err})
@@ -316,6 +327,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		m := p.members[msg.target]
 		// Best-effort teardown of the unhealthy container, off-loop.
 		go func(cn string) {
+			p.ops.expect(cn, "stop")
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			if err := p.docker.Stop(ctx, cn, gracefulStopTimeout); err != nil {
@@ -324,6 +336,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		}(m.containerName)
 		p.state = StateIdle
 		p.active = ""
+		p.target = ""
 		p.publish()
 		p.log.Error("swap health timeout", "target", msg.target, "budget", m.startupTimeout)
 		m.flush(admitReply{AdmitStartupTimeout,
@@ -339,6 +352,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		}
 		p.state = StateIdle
 		p.active = ""
+		p.target = ""
 		p.publish()
 		p.chainNow()
 	}

@@ -50,6 +50,7 @@ func (p *Pool) doSwap(op uint64, m *member, others []string) {
 		}
 	}
 
+	p.ops.expect(m.containerName, "start") // before the call: the event must find it
 	ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
 	err := p.docker.Start(ctx, m.containerName)
 	cancel()
@@ -117,6 +118,7 @@ func (p *Pool) isRunning(containerName string) (bool, error) {
 // stopAndConfirm stops a container gracefully and waits until Docker
 // reports it exited (PRD §3.2 step 3).
 func (p *Pool) stopAndConfirm(containerName string) error {
+	p.ops.expect(containerName, "stop") // before the call: the event must find it
 	ctx, cancel := context.WithTimeout(context.Background(), dockerCallDeadline)
 	err := p.docker.Stop(ctx, containerName, gracefulStopTimeout)
 	cancel()
