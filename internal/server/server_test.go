@@ -75,9 +75,9 @@ type testRig struct {
 
 func ptr(s string) *string { return &s }
 
-// newRig builds a full server: pooled alpha/beta on gpu0 + always-on
-// gamma, with model routing on /v1/chat/completions.
-func newRig(t *testing.T, maxQueue int) *testRig {
+// newRigParts builds the server runtime: pooled alpha/beta on gpu0 +
+// always-on gamma, with model routing on /v1/chat/completions.
+func newRigParts(t *testing.T, maxQueue int) (*Server, *dockerctl.FakeClient, map[string]*backend) {
 	t.Helper()
 	backends := map[string]*backend{}
 	for _, n := range []string{"alpha", "beta", "gamma"} {
@@ -116,7 +116,12 @@ func newRig(t *testing.T, maxQueue int) *testRig {
 		t.Fatalf("server.New: %v", err)
 	}
 	t.Cleanup(srv.Close)
+	return srv, docker, backends
+}
 
+func newRig(t *testing.T, maxQueue int) *testRig {
+	t.Helper()
+	srv, docker, backends := newRigParts(t, maxQueue)
 	front := httptest.NewServer(srv.Handler())
 	t.Cleanup(front.Close)
 	return &testRig{front: front, server: srv, docker: docker, backends: backends}
