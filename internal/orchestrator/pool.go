@@ -183,8 +183,12 @@ func (p *Pool) Close() { p.closing.Do(func() { close(p.done) }) }
 // client cancellation). The error carries detail for 502/504 payloads.
 func (p *Pool) Admit(ctx context.Context, service string) (AdmitResult, error) {
 	// Fast path: lock-free snapshot hint. Authority stays with the
-	// manager — a stale hit here only means proxying to a container
-	// in early teardown, which the grace period makes vanishingly rare.
+	// manager — a stale hit here only means proxying to a container in
+	// early teardown. For swaps the grace period makes that vanishingly
+	// rare; for cooldown/admin stops a microsecond race window remains
+	// (the request loses, gets a 502, and is self-limiting: its arrival
+	// proves the pool wasn't idle). Accepted trade-off; eliminating it
+	// would require in-flight request tracking on the hot path.
 	if s := p.snap.Load(); s.State == StateActive && s.ActiveService == service {
 		select {
 		case p.activity <- service:
