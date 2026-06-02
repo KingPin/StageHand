@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/KingPin/StageHand/internal/httperr"
 )
 
 // writeJSON serializes a payload with the right content type.
@@ -14,11 +16,7 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 // writeError emits StageHand's JSON error envelope.
 func writeError(w http.ResponseWriter, status int, msg, detail string) {
-	body := map[string]string{"error": msg}
-	if detail != "" {
-		body["detail"] = detail
-	}
-	writeJSON(w, status, body)
+	httperr.Write(w, status, msg, detail)
 }
 
 // writeUnmatched is the 404 for requests no route matches; listing the

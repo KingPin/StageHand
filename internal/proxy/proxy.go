@@ -5,13 +5,14 @@
 package proxy
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"time"
+
+	"github.com/KingPin/StageHand/internal/httperr"
 )
 
 // sharedTransport is reused by every service proxy: backends are few and
@@ -49,12 +50,7 @@ func New(target *url.URL, log *slog.Logger) *httputil.ReverseProxy {
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Error("upstream round-trip failed",
 				"target", target.String(), "path", r.URL.Path, "err", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":  "upstream request failed",
-				"detail": err.Error(),
-			})
+			httperr.Write(w, http.StatusBadGateway, "upstream request failed", err.Error())
 		},
 	}
 }
