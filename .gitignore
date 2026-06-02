@@ -1,0 +1,53 @@
+# --- Go build artifacts ---
+/stagehand
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.txt
+coverage.html
+go.work
+go.work.sum
+
+# --- AI assistant artifacts ---
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+MEMORY.md
+ONBOARDING.md
+.aider*
+.cursor/
+.cursorrules
+.windsurf/
+.codex/
+.copilot/
+.github/copilot-instructions.md
+.playwright-mcp/
+
+# --- AI-generated working dirs ---
+docs/
+superpowers/
+audit/
+plans/
+specs/
+worknotes/
+
+# --- Environment / secrets ---
+.env
+.env.*
+*.local.yaml
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
