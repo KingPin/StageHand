@@ -159,6 +159,11 @@ WebSocket upgrades.
   containers are left running — models are expensive to reload.
 - **Restart policies**: StageHand stops containers via the Docker API, which
   Docker honors even under `restart: always`/`unless-stopped`.
+- **WebSocket tunnels don't pin containers**: a live tunnel does not prevent
+  its backend from being swapped out by another model's traffic (post-grace),
+  a cooldown, or an admin action — the tunnel drops and the client should
+  reconnect (ComfyUI/A1111 frontends do so automatically). Size
+  `grace_period_seconds` to your interactive sessions if this matters.
 
 ## Development
 

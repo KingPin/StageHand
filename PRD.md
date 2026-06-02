@@ -254,6 +254,12 @@ progress, queues, and execution status:
   bi-directionally between the client socket and the backend container.
 - WebSocket connects to a pooled service participate in pool orchestration like
   any HTTP request (they can trigger and wait on a swap).
+- **Known limitation — tunnels do not pin containers:** an established tunnel
+  does not prevent its backend from being swapped out later (grace-period swap,
+  cooldown stop, or admin action). When that happens the tunnel drops without a
+  WebSocket close frame; clients are expected to reconnect (ComfyUI and A1111
+  frontends do this automatically), which re-enters pool orchestration and can
+  swap the service back in.
 
 ## 5. System Health, Observability, & CORS
 
