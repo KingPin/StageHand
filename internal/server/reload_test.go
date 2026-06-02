@@ -2,8 +2,10 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"os"
@@ -15,6 +17,28 @@ import (
 
 	"github.com/KingPin/StageHand/internal/config"
 )
+
+func TestReloadWarnsOnRestartOnlySettings(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	prev := &config.Server{Host: "0.0.0.0", Port: 8080, DockerSocketPath: "/var/run/docker.sock"}
+	next := &config.Server{Host: "127.0.0.1", Port: 9090, DockerSocketPath: "/other/docker.sock"}
+
+	warnRestartOnly(log, prev, next)
+	out := buf.String()
+	if !strings.Contains(out, "listen address") {
+		t.Errorf("missing listen-address warning in: %s", out)
+	}
+	if !strings.Contains(out, "docker_socket_path") {
+		t.Errorf("missing socket-path warning in: %s", out)
+	}
+
+	buf.Reset()
+	warnRestartOnly(log, prev, prev)
+	if buf.Len() != 0 {
+		t.Errorf("unexpected warnings for identical settings: %s", buf.String())
+	}
+}
 
 func TestReloadAddsRouteForNewRequests(t *testing.T) {
 	rig := newRig(t, 10)

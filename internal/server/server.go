@@ -39,6 +39,7 @@ type service struct {
 // reads it through one atomic load, so hot reload is a pointer swap:
 // new requests see the new world, in-flight requests finish in the old.
 type runtime struct {
+	cfg         *config.Config // the revision this runtime was built from
 	corsOrigins []string
 	router      *router.Router
 	services    map[string]*service
@@ -103,6 +104,7 @@ func (s *Server) Close() {
 // close (flushing their queues).
 func (s *Server) buildRuntime(cfg *config.Config, prev *runtime) (*runtime, error) {
 	rt := &runtime{
+		cfg:         cfg,
 		corsOrigins: cfg.Server.CORSAllowedOrigins,
 		router:      router.New(cfg.Routes),
 		services:    make(map[string]*service, len(cfg.Services)),
@@ -167,6 +169,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 	}
 
 	prev := s.rt.Load()
+	warnRestartOnly(s.log, &prev.cfg.Server, &cfg.Server)
 	next, err := s.buildRuntime(cfg, prev)
 	if err != nil {
 		return fmt.Errorf("reload rejected: %w", err)
@@ -248,6 +251,20 @@ func poolSignature(p config.VRAMPool, members []orchestrator.MemberConfig) strin
 			m.Name, m.ContainerName, m.HealthURL, m.StartupTimeout, m.MaxQueue)
 	}
 	return b.String()
+}
+
+// warnRestartOnly logs when a reload changes settings that only a
+// restart can apply (PRD §7: documented limitation, surfaced loudly).
+func warnRestartOnly(log *slog.Logger, prev, next *config.Server) {
+	if prev.Host != next.Host || prev.Port != next.Port {
+		log.Warn("reload cannot change the listen address; restart required",
+			"active", fmt.Sprintf("%s:%d", prev.Host, prev.Port),
+			"requested", fmt.Sprintf("%s:%d", next.Host, next.Port))
+	}
+	if prev.DockerSocketPath != next.DockerSocketPath {
+		log.Warn("reload cannot change docker_socket_path; restart required",
+			"active", prev.DockerSocketPath, "requested", next.DockerSocketPath)
+	}
 }
 
 func containerNames(cfg *config.Config) []string {
