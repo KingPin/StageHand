@@ -174,3 +174,7 @@ go build ./... && go vet ./... && go test -race ./...   # local toolchain
 
 The test suite runs entirely against an in-memory Docker fake. An optional
 real-Docker e2e suite is gated behind `STAGEHAND_E2E=1` (see `e2e`).
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
