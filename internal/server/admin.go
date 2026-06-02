@@ -83,7 +83,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request, rt *runtim
 		go func(name string, svc *service) {
 			defer wg.Done()
 			state := "healthy"
-			if !probeHealth(ctx, svc.healthURL) {
+			if !orchestrator.ProbeHealth(ctx, svc.healthURL) {
 				state = "unhealthy"
 			}
 			mu.Lock()
@@ -102,20 +102,6 @@ func (s *Server) handleReload(w http.ResponseWriter) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reloaded"})
-}
-
-// probeHealth checks an always-on service's health endpoint.
-func probeHealth(ctx context.Context, url string) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return false
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
 }
 
 func handleAdminSwap(w http.ResponseWriter, rt *runtime, serviceName string) {
