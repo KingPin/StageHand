@@ -91,7 +91,11 @@ func (s *Server) Handler() http.Handler { return http.HandlerFunc(s.handle) }
 func (s *Server) Watcher() *orchestrator.Watcher { return s.watcher }
 
 // Close stops all pool managers and tears down tunneled connections.
+// It serializes with Reload so a reload racing shutdown can neither
+// resurrect pools nor leave freshly-built ones unclosed.
 func (s *Server) Close() {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	for _, p := range s.rt.Load().pools {
 		p.Close()
 	}
