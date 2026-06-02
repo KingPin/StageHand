@@ -42,9 +42,15 @@ func PeekModel(req *http.Request) (string, error) {
 	}
 
 	// Fully buffered: the original stream is exhausted; close it and
-	// replay from memory.
+	// replay from memory. GetBody makes the request replayable, which
+	// lets http.Transport transparently retry on a dead keep-alive
+	// connection — the normal case right after a container swap, when
+	// pooled idle conns to the backend have just gone stale.
 	req.Body.Close()
-	req.Body = replayBody{Reader: bytes.NewReader(buf)}
+	req.Body = io.NopCloser(bytes.NewReader(buf))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(buf)), nil
+	}
 
 	var probe struct {
 		Model string `json:"model"`
@@ -55,16 +61,14 @@ func PeekModel(req *http.Request) (string, error) {
 	return probe.Model, nil
 }
 
-// replayBody is an io.ReadCloser over replayed bytes; closing it closes
-// the original body when one is still attached (oversized case).
+// replayBody replays buffered bytes ahead of a still-attached original
+// body (the oversized case); closing it closes the original. The fully
+// buffered case uses plain io.NopCloser instead.
 type replayBody struct {
 	io.Reader
 	closer io.Closer
 }
 
 func (r replayBody) Close() error {
-	if r.closer != nil {
-		return r.closer.Close()
-	}
-	return nil
+	return r.closer.Close()
 }

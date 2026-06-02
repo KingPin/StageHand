@@ -186,6 +186,30 @@ func TestPeekModel(t *testing.T) {
 	}
 }
 
+// TestPeekModelSetsGetBody: the buffered case must be replayable so the
+// transport can retry on dead keep-alive conns right after a swap.
+func TestPeekModelSetsGetBody(t *testing.T) {
+	body := `{"model":"qwen-moe"}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+	if _, err := PeekModel(req); err != nil {
+		t.Fatal(err)
+	}
+	if req.GetBody == nil {
+		t.Fatal("GetBody is nil; peeked POSTs are not replayable by the transport")
+	}
+	for i := range 2 { // replayable more than once
+		rc, err := req.GetBody()
+		if err != nil {
+			t.Fatalf("GetBody[%d]: %v", i, err)
+		}
+		got, _ := io.ReadAll(rc)
+		rc.Close()
+		if string(got) != body {
+			t.Errorf("GetBody[%d] = %q, want %q", i, got, body)
+		}
+	}
+}
+
 func TestPeekModelNilBody(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/models", nil)
 	model, err := PeekModel(req)
