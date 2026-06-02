@@ -3,7 +3,11 @@
 // and routing rules described in PRD.md §2.
 package config
 
-import "time"
+import (
+	"slices"
+	"strings"
+	"time"
+)
 
 // Defaults applied during Load when a field is omitted.
 const (
@@ -73,6 +77,11 @@ func (s Service) StartupTimeout() time.Duration {
 	return time.Duration(s.StartupTimeoutSeconds) * time.Second
 }
 
+// HealthURL returns the absolute URL polled for readiness.
+func (s Service) HealthURL() string {
+	return strings.TrimSuffix(s.TargetURL, "/") + s.HealthPath
+}
+
 // Route maps incoming requests to a service. Routes are evaluated in
 // declared order; first match wins (PRD §2.1).
 type Route struct {
@@ -93,4 +102,15 @@ func (c *Config) QueueSize(svc Service) int {
 		return svc.MaxQueueSize
 	}
 	return c.Server.MaxQueueSize
+}
+
+// ContainerNames returns every configured container name, sorted —
+// the list boot and reload validation hand to Docker.
+func (c *Config) ContainerNames() []string {
+	names := make([]string, 0, len(c.Services))
+	for _, svc := range c.Services {
+		names = append(names, svc.ContainerName)
+	}
+	slices.Sort(names)
+	return names
 }

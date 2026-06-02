@@ -66,11 +66,8 @@ func run() error {
 
 	// Boot validation: every configured container must exist NOW —
 	// failing at first request would be far worse (PRD §2.2).
+	names := cfg.ContainerNames()
 	bootCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	names := make([]string, 0, len(cfg.Services))
-	for _, svc := range cfg.Services {
-		names = append(names, svc.ContainerName)
-	}
 	err = dockerctl.ValidateContainers(bootCtx, docker, names)
 	cancel()
 	if err != nil {

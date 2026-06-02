@@ -147,7 +147,7 @@ func (s *Server) buildRuntime(cfg *config.Config, prev *runtime) (*runtime, erro
 			name:          name,
 			containerName: svc.ContainerName,
 			target:        target,
-			healthURL:     strings.TrimSuffix(svc.TargetURL, "/") + svc.HealthPath,
+			healthURL:     svc.HealthURL(),
 			proxy:         proxy.New(target, s.log.With("service", name)),
 		}
 		if svc.VRAMPool != nil {
@@ -168,7 +168,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := dockerctl.ValidateContainers(ctx, s.docker, containerNames(cfg)); err != nil {
+	if err := dockerctl.ValidateContainers(ctx, s.docker, cfg.ContainerNames()); err != nil {
 		return fmt.Errorf("reload rejected: %w", err)
 	}
 
@@ -230,7 +230,7 @@ func poolMembers(cfg *config.Config, poolName string) []orchestrator.MemberConfi
 		members = append(members, orchestrator.MemberConfig{
 			Name:           svcName,
 			ContainerName:  svc.ContainerName,
-			HealthURL:      strings.TrimSuffix(svc.TargetURL, "/") + svc.HealthPath,
+			HealthURL:      svc.HealthURL(),
 			StartupTimeout: svc.StartupTimeout(),
 			MaxQueue:       cfg.QueueSize(svc),
 		})
@@ -271,11 +271,3 @@ func warnRestartOnly(log *slog.Logger, prev, next *config.Server) {
 	}
 }
 
-func containerNames(cfg *config.Config) []string {
-	names := make([]string, 0, len(cfg.Services))
-	for _, svc := range cfg.Services {
-		names = append(names, svc.ContainerName)
-	}
-	slices.Sort(names)
-	return names
-}
