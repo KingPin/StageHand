@@ -9,10 +9,12 @@ import (
 // origin is echoed and the browser's requested headers are allowed
 // verbatim — '*' breaks credentialed requests, echoing does not.
 func preflight(w http.ResponseWriter, r *http.Request, allowed []string) {
+	// Vary is set even when no CORS headers are emitted: caches must
+	// never serve an allowed-origin response to a different origin.
+	w.Header().Set("Vary", "Origin")
 	if origin := allowedOrigin(r, allowed); origin != "" {
 		h := w.Header()
 		h.Set("Access-Control-Allow-Origin", origin)
-		h.Set("Vary", "Origin")
 		h.Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
 		if req := r.Header.Get("Access-Control-Request-Headers"); req != "" {
 			h.Set("Access-Control-Allow-Headers", req)
@@ -26,9 +28,9 @@ func preflight(w http.ResponseWriter, r *http.Request, allowed []string) {
 
 // setCORSOrigin marks non-preflight responses so browsers accept them.
 func setCORSOrigin(w http.ResponseWriter, r *http.Request, allowed []string) {
+	w.Header().Set("Vary", "Origin") // unconditional: see preflight
 	if origin := allowedOrigin(r, allowed); origin != "" {
 		w.Header().Set("Access-Control-Allow-Origin", origin)
-		w.Header().Set("Vary", "Origin")
 	}
 }
 

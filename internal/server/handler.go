@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -73,7 +75,15 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "stagehand is shutting down", detail)
 			return
 		case orchestrator.AdmitCanceled:
-			return // client is gone; nothing to write
+			// Distinguish "client went away" (write nothing) from a
+			// deadline-driven cancel (WriteTimeout / timeout middleware),
+			// where the peer is still listening and silence would become
+			// an empty 200.
+			if errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+				writeError(w, http.StatusGatewayTimeout,
+					"request deadline exceeded while waiting for service", detail)
+			}
+			return
 		default:
 			writeError(w, http.StatusInternalServerError, "unexpected admission result", detail)
 			return

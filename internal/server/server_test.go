@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -325,6 +326,50 @@ func TestCORSOriginOnActualResponse(t *testing.T) {
 
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:3000" {
 		t.Errorf("Allow-Origin on response = %q, want echoed origin", got)
+	}
+}
+
+// TestDeadlineExceededWhileQueuedReturns504: a deadline-driven cancel
+// (vs. a vanished client) must produce a response, not silence.
+func TestDeadlineExceededWhileQueuedReturns504(t *testing.T) {
+	rig := newRig(t, 10)
+	rig.backends["alpha"].healthOK.Store(false) // swap will hang
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+	rig.server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want 504 on deadline-exceeded admit", rec.Code)
+	}
+	rig.backends["alpha"].healthOK.Store(true)
+}
+
+func TestVarySetForDisallowedOrigin(t *testing.T) {
+	srv, _, _, cfg := newRigParts(t, 10)
+	cfg2 := *cfg
+	cfg2.Server.CORSAllowedOrigins = []string{"http://allowed.example"}
+	if err := srv.Reload(&cfg2); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	front := httptest.NewServer(srv.Handler())
+	defer front.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, front.URL+"/v1/embeddings", nil)
+	req.Header.Set("Origin", "http://evil.example")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("ACAO = %q for disallowed origin, want empty", got)
+	}
+	if got := resp.Header.Get("Vary"); !strings.Contains(got, "Origin") {
+		t.Errorf("Vary = %q, want Origin even for disallowed origins (cache safety)", got)
 	}
 }
 
