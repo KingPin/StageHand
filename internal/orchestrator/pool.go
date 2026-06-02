@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -105,15 +104,6 @@ func NewPool(cfg PoolConfig, docker dockerctl.Client, clk clock.Clock, log *slog
 	p.publish()
 	go p.run()
 	return p
-}
-
-// Name returns the pool's configured name.
-func (p *Pool) Name() string { return p.name }
-
-// HasMember reports whether the named service belongs to this pool.
-func (p *Pool) HasMember(service string) bool {
-	_, ok := p.members[service]
-	return ok
 }
 
 // Snapshot returns the latest published pool state (lock-free).
@@ -588,16 +578,15 @@ func (p *Pool) oldestQueued() string {
 	return best
 }
 
-// otherContainers lists every member container except target's, sorted
-// for deterministic stop ordering.
+// otherContainers lists every member container except target's, in the
+// same deterministic order doStopAll uses (sortedMembers).
 func (p *Pool) otherContainers(target string) []string {
 	out := make([]string, 0, len(p.members)-1)
-	for name, m := range p.members {
-		if name != target {
+	for _, m := range p.sortedMembers() {
+		if m.name != target {
 			out = append(out, m.containerName)
 		}
 	}
-	slices.Sort(out)
 	return out
 }
 
