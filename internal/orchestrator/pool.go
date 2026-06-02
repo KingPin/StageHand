@@ -583,6 +583,13 @@ func (p *Pool) publish() {
 }
 
 func (p *Pool) shutdown() {
+	// Publish a terminal snapshot FIRST: the lock-free Admit fast path
+	// must never see a stale ACTIVE state on a closed pool, or requests
+	// in flight across a reload would proxy into an unmanaged container
+	// instead of receiving the contractual 503.
+	p.state = StateIdle
+	p.active = ""
+	p.publish()
 	for _, m := range p.members {
 		m.flush(admitReply{result: AdmitShutdown})
 	}

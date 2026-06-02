@@ -409,6 +409,23 @@ func TestChainedSwapServesSecondServiceAfterFirst(t *testing.T) {
 	}
 }
 
+// TestClosedPoolRejectsFastPath is the reload-safety regression: a pool
+// closed while ACTIVE must not keep admitting via the stale snapshot.
+func TestClosedPoolRejectsFastPath(t *testing.T) {
+	tp := newTestPool(t, clock.New(), 0, 10)
+	mustAdmit(t, tp.pool, "alpha") // snapshot: ACTIVE alpha
+
+	tp.pool.Close()
+	waitFor(t, "terminal snapshot", func() bool {
+		return tp.pool.Snapshot().State != StateActive
+	})
+
+	res, _ := tp.pool.Admit(context.Background(), "alpha")
+	if res != AdmitShutdown {
+		t.Errorf("Admit on closed pool = %v, want AdmitShutdown", res)
+	}
+}
+
 func TestShutdownFlushesQueuedWith503(t *testing.T) {
 	tp := newTestPool(t, clock.New(), 0, 10, "beta")
 
