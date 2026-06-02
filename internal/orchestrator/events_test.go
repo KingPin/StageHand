@@ -159,30 +159,46 @@ func TestAdminSwapSupersedeReported(t *testing.T) {
 	})
 }
 
-func TestOpRegistryTTLAndMatching(t *testing.T) {
+func TestOpRegistryCountedMatching(t *testing.T) {
 	mock := clock.NewMock()
 	r := newOpRegistry(mock)
 
+	// A stop expectation absorbs exactly the kill/die/stop burst.
 	r.expect("c1", "stop")
 	for _, action := range []string{"kill", "die", "stop"} {
 		if !r.isExpected("c1", action) {
 			t.Errorf("stop expectation should explain %q", action)
 		}
 	}
-	if r.isExpected("c1", "start") {
+	if r.isExpected("c1", "die") {
+		t.Error("4th teardown event must be external — budget exhausted")
+	}
+
+	// Non-matching actions don't consume the budget.
+	r.expect("c2", "stop")
+	if r.isExpected("c2", "start") {
 		t.Error("stop expectation must not explain a start")
 	}
-	if r.isExpected("c2", "die") {
+	if !r.isExpected("c2", "die") {
+		t.Error("die should still match after the non-matching start probe")
+	}
+	if r.isExpected("c9", "die") {
 		t.Error("unrelated container must not match")
 	}
 
+	// A start expectation absorbs exactly one start.
 	r.expect("c3", "start")
 	if !r.isExpected("c3", "start") {
 		t.Error("start expectation should explain start")
 	}
+	if r.isExpected("c3", "start") {
+		t.Error("second start must be external — budget exhausted")
+	}
 
+	// TTL backstop still applies to unconsumed entries.
+	r.expect("c4", "stop")
 	mock.Add(opTTL + time.Second)
-	if r.isExpected("c1", "die") {
+	if r.isExpected("c4", "die") {
 		t.Error("expired expectation must not match")
 	}
 }

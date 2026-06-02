@@ -22,34 +22,45 @@ const opTTL = 30 * time.Second
 // (PRD §6). Workers register BEFORE issuing the API call; the resulting
 // event can therefore never observe a missing entry.
 //
+// Expectations are COUNTED, not just time-boxed: a docker stop emits at
+// most a kill/die/stop burst (3 events) and a start emits one, so each
+// expectation absorbs only that many matching events. The TTL remains
+// as a backstop for ops that failed without emitting anything. This
+// keeps the window in which a genuinely external event on the same
+// container could be misclassified as small as the burst itself.
+//
 // It is deliberately a tiny mutex-guarded object shared between worker
 // goroutines and the watcher — the pool manager's actor state stays
 // goroutine-private.
 type opRegistry struct {
 	mu      sync.Mutex
 	clk     clock.Clock
-	entries map[string]opEntry // containerName -> latest expectation
+	entries map[string]*opEntry // containerName -> latest expectation
 }
 
 type opEntry struct {
-	kind string // "start" | "stop"
-	at   time.Time
+	kind      string // "start" | "stop"
+	at        time.Time
+	remaining int // matching events left to absorb
 }
 
 func newOpRegistry(clk clock.Clock) *opRegistry {
-	return &opRegistry{clk: clk, entries: map[string]opEntry{}}
+	return &opRegistry{clk: clk, entries: map[string]*opEntry{}}
 }
 
 // expect records an imminent self-operation on a container.
 func (r *opRegistry) expect(container, kind string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.entries[container] = opEntry{kind: kind, at: r.clk.Now()}
+	remaining := 1 // "start" emits a single event
+	if kind == "stop" {
+		remaining = 3 // kill + die + stop burst
+	}
+	r.entries[container] = &opEntry{kind: kind, at: r.clk.Now(), remaining: remaining}
 }
 
 // isExpected reports whether an incoming event is explained by a live
-// self-operation. A "stop" expectation explains the whole teardown event
-// burst (kill/die/stop); a "start" expectation explains "start".
+// self-operation, consuming one unit of the expectation's budget.
 func (r *opRegistry) isExpected(container, action string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -61,13 +72,21 @@ func (r *opRegistry) isExpected(container, action string) bool {
 		delete(r.entries, container)
 		return false
 	}
+	var matches bool
 	switch e.kind {
 	case "stop":
-		return action == "die" || action == "stop" || action == "kill"
+		matches = action == "die" || action == "stop" || action == "kill"
 	case "start":
-		return action == "start"
+		matches = action == "start"
 	}
-	return false
+	if !matches {
+		return false
+	}
+	e.remaining--
+	if e.remaining <= 0 {
+		delete(r.entries, container)
+	}
+	return true
 }
 
 // Watcher subscribes to the Docker events stream and routes container
