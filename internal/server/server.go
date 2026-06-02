@@ -22,10 +22,11 @@ import (
 // service is the per-backend runtime: its reverse proxy and, for pooled
 // services, the owning pool (nil = always-on).
 type service struct {
-	name   string
-	target *url.URL
-	proxy  *httputil.ReverseProxy
-	pool   *orchestrator.Pool
+	name      string
+	target    *url.URL
+	healthURL string
+	proxy     *httputil.ReverseProxy
+	pool      *orchestrator.Pool
 }
 
 // Server hosts StageHand's HTTP surface.
@@ -91,9 +92,10 @@ func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog
 			return nil, fmt.Errorf("service %q target_url: %w", name, err)
 		}
 		rt := &service{
-			name:   name,
-			target: target,
-			proxy:  proxy.New(target, log.With("service", name)),
+			name:      name,
+			target:    target,
+			healthURL: strings.TrimSuffix(svc.TargetURL, "/") + svc.HealthPath,
+			proxy:     proxy.New(target, log.With("service", name)),
 		}
 		if svc.VRAMPool != nil {
 			rt.pool = s.pools[*svc.VRAMPool]

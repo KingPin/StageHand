@@ -85,12 +85,6 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	svc.proxy.ServeHTTP(w, r)
 }
 
-// handleStageHand serves the reserved /stagehand/* namespace. The status
-// and admin endpoints land in their own commits; unknown paths are 404.
-func (s *Server) handleStageHand(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotFound, "unknown stagehand endpoint", r.URL.Path)
-}
-
 func hasJSONBody(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Content-Type"), "json")
 }

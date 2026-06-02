@@ -94,6 +94,41 @@ type extEvent struct {
 	action    string // "start", "die", "stop", "kill"
 }
 
+// PoolStatus is the status-API view of a pool (PRD §5.1).
+type PoolStatus struct {
+	State                PoolState
+	ActiveService        string
+	SecondsUntilCooldown int64 // -1 when no countdown is armed
+	QueuedRequests       int   // total across member services
+}
+
+// statusCmd asks the manager for a PoolStatus.
+type statusCmd struct {
+	reply chan PoolStatus
+}
+
+// AdminOutcome describes how an admin operation was applied.
+type AdminOutcome string
+
+const (
+	AdminInitiated     AdminOutcome = "initiated"      // swap/stop started now
+	AdminPending       AdminOutcome = "pending"        // chained behind in-flight swap
+	AdminAlreadyActive AdminOutcome = "already-active" // target already serving
+	AdminAlreadyIdle   AdminOutcome = "already-idle"   // pool already cold
+	AdminUnknown       AdminOutcome = "unknown-service"
+)
+
+// adminSwapCmd forces a swap to a service (pre-warm); bypasses grace.
+type adminSwapCmd struct {
+	service string
+	reply   chan AdminOutcome
+}
+
+// adminStopCmd forces the pool cold, flushing all queues with 503.
+type adminStopCmd struct {
+	reply chan AdminOutcome
+}
+
 type swapKind int
 
 const (

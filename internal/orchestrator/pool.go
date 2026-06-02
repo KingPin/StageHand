@@ -55,14 +55,16 @@ type Pool struct {
 	ops      *opRegistry // self-initiated op expectations (shared w/ workers)
 
 	// --- manager-goroutine-private state: NEVER touched elsewhere ---
-	state     PoolState
-	active    string
-	target    string // swap target while SWAPPING
-	startedAt time.Time
-	members   map[string]*member
-	epochs    [2]uint64 // per timerKind; bumps invalidate in-flight ticks
-	opSeq     uint64    // bumps identify the current swap worker
-	seq       uint64    // waiter ordering across services
+	state            PoolState
+	active           string
+	target           string // swap target while SWAPPING
+	adminPending     string // operator-requested swap chained behind one in flight
+	startedAt        time.Time
+	cooldownDeadline time.Time // display-only; authority is the epoch-guarded tick
+	members          map[string]*member
+	epochs           [2]uint64 // per timerKind; bumps invalidate in-flight ticks
+	opSeq            uint64    // bumps identify the current swap worker
+	seq              uint64    // waiter ordering across services
 }
 
 // NewPool builds the pool and starts its manager goroutine.
@@ -128,6 +130,55 @@ func (p *Pool) QueuedCounts() map[string]int {
 	}
 }
 
+// Status reports the pool's state for the status API (PRD §5.1).
+func (p *Pool) Status() PoolStatus {
+	reply := make(chan PoolStatus, 1)
+	select {
+	case p.cmds <- statusCmd{reply: reply}:
+	case <-p.done:
+		return PoolStatus{State: p.Snapshot().State, SecondsUntilCooldown: -1}
+	}
+	select {
+	case st := <-reply:
+		return st
+	case <-p.done:
+		return PoolStatus{State: p.Snapshot().State, SecondsUntilCooldown: -1}
+	}
+}
+
+// AdminSwap forces a swap to the named service (pre-warm), bypassing the
+// grace period; if a swap is in flight, it chains behind it (PRD §5.2).
+func (p *Pool) AdminSwap(service string) AdminOutcome {
+	reply := make(chan AdminOutcome, 1)
+	select {
+	case p.cmds <- adminSwapCmd{service: service, reply: reply}:
+	case <-p.done:
+		return AdminUnknown
+	}
+	select {
+	case out := <-reply:
+		return out
+	case <-p.done:
+		return AdminUnknown
+	}
+}
+
+// AdminStop forces the pool cold, flushing queues with 503 (PRD §5.2).
+func (p *Pool) AdminStop() AdminOutcome {
+	reply := make(chan AdminOutcome, 1)
+	select {
+	case p.cmds <- adminStopCmd{reply: reply}:
+	case <-p.done:
+		return AdminAlreadyIdle
+	}
+	select {
+	case out := <-reply:
+		return out
+	case <-p.done:
+		return AdminAlreadyIdle
+	}
+}
+
 // Close stops the manager; queued waiters receive AdmitShutdown.
 func (p *Pool) Close() { p.closing.Do(func() { close(p.done) }) }
 
@@ -189,6 +240,12 @@ func (p *Pool) run() {
 					depths[name] = len(m.queue)
 				}
 				cmd.reply <- depths
+			case statusCmd:
+				cmd.reply <- p.buildStatus()
+			case adminSwapCmd:
+				cmd.reply <- p.handleAdminSwap(cmd.service)
+			case adminStopCmd:
+				cmd.reply <- p.handleAdminStop()
 			}
 		case msg := <-p.swaps:
 			p.handleSwap(msg)
@@ -298,22 +355,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		p.publish()
 		p.log.Info("swap complete", "active", msg.target)
 		m.flush(admitReply{result: AdmitGo})
-		// Other services may have queued during the swap: chain, but
-		// honor the fresh grace period so the new container isn't
-		// torn down under the requests just flushed into it.
-		if next := p.oldestQueued(); next != "" {
-			if p.grace > 0 {
-				p.armTimer(tickGrace, p.grace)
-			} else {
-				p.startSwap(next)
-			}
-			return
-		}
-		// Quiet pool: begin the idle countdown — unless the default
-		// service is the one running (it stays warm indefinitely).
-		if p.cooldown > 0 && !(p.defaultSvc != "" && p.active == p.defaultSvc) {
-			p.armTimer(tickCooldown, p.cooldown)
-		}
+		p.chainAfterTerminal(true)
 	case swapFailed:
 		m := p.members[msg.target]
 		p.state = StateIdle
@@ -322,7 +364,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		p.publish()
 		p.log.Error("swap failed", "target", msg.target, "err", msg.err)
 		m.flush(admitReply{AdmitDockerError, msg.err})
-		p.chainNow()
+		p.chainAfterTerminal(false)
 	case swapHealthTimeout:
 		m := p.members[msg.target]
 		// Best-effort teardown of the unhealthy container, off-loop.
@@ -341,7 +383,7 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		p.log.Error("swap health timeout", "target", msg.target, "budget", m.startupTimeout)
 		m.flush(admitReply{AdmitStartupTimeout,
 			fmt.Errorf("service %q failed its health check within %s", msg.target, m.startupTimeout)})
-		p.chainNow()
+		p.chainAfterTerminal(false)
 	case poolStopped:
 		if msg.err != nil {
 			// Containers may straggle; the next swap's defensive sweep
@@ -354,8 +396,101 @@ func (p *Pool) handleSwap(msg swapMsg) {
 		p.active = ""
 		p.target = ""
 		p.publish()
-		p.chainNow()
+		p.chainAfterTerminal(false)
 	}
+}
+
+// chainAfterTerminal decides what happens after a swap/stop terminates:
+// an operator-requested swap wins, then the longest-waiting queued
+// service, then (if newly activated and quiet) the idle countdown.
+func (p *Pool) chainAfterTerminal(activated bool) {
+	if p.adminPending != "" && p.adminPending != p.active {
+		next := p.adminPending
+		p.adminPending = ""
+		p.startSwap(next)
+		return
+	}
+	p.adminPending = ""
+
+	if next := p.oldestQueued(); next != "" {
+		if activated && p.grace > 0 {
+			// Honor the fresh grace period so the new container isn't
+			// torn down under the requests just flushed into it.
+			p.armTimer(tickGrace, p.grace)
+		} else {
+			p.startSwap(next)
+		}
+		return
+	}
+
+	// Quiet pool: begin the idle countdown — unless the default service
+	// is the one running (it stays warm indefinitely).
+	if activated && p.cooldown > 0 && !(p.defaultSvc != "" && p.active == p.defaultSvc) {
+		p.armTimer(tickCooldown, p.cooldown)
+	}
+}
+
+// handleAdminSwap forces a swap to a service, bypassing the grace period
+// (operator intent is explicit). Mid-swap requests chain at completion.
+func (p *Pool) handleAdminSwap(service string) AdminOutcome {
+	if _, ok := p.members[service]; !ok {
+		return AdminUnknown
+	}
+	switch p.state {
+	case StateActive:
+		if p.active == service {
+			return AdminAlreadyActive
+		}
+		p.startSwap(service)
+		return AdminInitiated
+	case StateSwapping:
+		if p.target == service {
+			return AdminPending // already heading there
+		}
+		p.adminPending = service
+		return AdminPending
+	default: // Idle, Error
+		p.startSwap(service)
+		return AdminInitiated
+	}
+}
+
+// handleAdminStop forces the pool cold: every queue flushes with 503 and
+// running containers are stopped.
+func (p *Pool) handleAdminStop() AdminOutcome {
+	p.adminPending = ""
+	for _, m := range p.members {
+		m.flush(admitReply{result: AdmitShutdown})
+	}
+	switch p.state {
+	case StateIdle:
+		return AdminAlreadyIdle
+	case StateSwapping:
+		p.opSeq++ // orphan the in-flight worker
+		p.target = ""
+		p.startStopAll()
+		return AdminInitiated
+	default: // Active, Error
+		p.startStopAll()
+		return AdminInitiated
+	}
+}
+
+func (p *Pool) buildStatus() PoolStatus {
+	st := PoolStatus{
+		State:                p.state,
+		ActiveService:        p.active,
+		SecondsUntilCooldown: -1,
+	}
+	for _, m := range p.members {
+		st.QueuedRequests += len(m.queue)
+	}
+	if p.state == StateActive && !p.cooldownDeadline.IsZero() {
+		if remaining := p.cooldownDeadline.Sub(p.clk.Now()); remaining > 0 {
+			st.SecondsUntilCooldown = int64(remaining.Seconds())
+		}
+	}
+	return st
 }
 
 func (p *Pool) handleTick(tick timerTick) {
@@ -426,6 +561,9 @@ func (p *Pool) otherContainers(target string) []string {
 func (p *Pool) armTimer(kind timerKind, d time.Duration) {
 	p.epochs[kind]++
 	e := p.epochs[kind]
+	if kind == tickCooldown {
+		p.cooldownDeadline = p.clk.Now().Add(d) // display-only (status API)
+	}
 	p.clk.AfterFunc(d, func() {
 		select {
 		case p.timers <- timerTick{kind: kind, epoch: e}:
@@ -437,6 +575,7 @@ func (p *Pool) armTimer(kind timerKind, d time.Duration) {
 func (p *Pool) bumpEpochs() {
 	p.epochs[tickGrace]++
 	p.epochs[tickCooldown]++
+	p.cooldownDeadline = time.Time{}
 }
 
 func (p *Pool) publish() {
