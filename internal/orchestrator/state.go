@@ -116,6 +116,9 @@ const (
 	AdminAlreadyActive AdminOutcome = "already-active" // target already serving
 	AdminAlreadyIdle   AdminOutcome = "already-idle"   // pool already cold
 	AdminUnknown       AdminOutcome = "unknown-service"
+	// AdminSuperseded: chained behind the in-flight swap AND replaced a
+	// previously pending admin target, which will now never run.
+	AdminSuperseded AdminOutcome = "pending-superseded-previous"
 )
 
 // adminSwapCmd forces a swap to a service (pre-warm); bypasses grace.

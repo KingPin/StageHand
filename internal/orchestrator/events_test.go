@@ -126,6 +126,39 @@ func TestWatcherResubscribesAfterStreamError(t *testing.T) {
 	})
 }
 
+// TestAdminSwapSupersedeReported: replacing a pending admin target is
+// last-wins, but the caller must be told the previous one was dropped.
+func TestAdminSwapSupersedeReported(t *testing.T) {
+	tp := newTestPoolOpts(t, clock.New(), tpOpts{
+		services: []string{"alpha", "beta", "gamma"},
+		held:     []string{"beta"}, // beta health held: swap hangs
+	})
+	go tp.pool.Admit(context.Background(), "beta")
+	waitFor(t, "swap in flight", func() bool {
+		return tp.pool.Snapshot().State == StateSwapping
+	})
+
+	if out := tp.pool.AdminSwap("alpha"); out != AdminPending {
+		t.Fatalf("first admin swap = %v, want pending", out)
+	}
+	if out := tp.pool.AdminSwap("alpha"); out != AdminPending {
+		t.Fatalf("same-target repeat = %v, want pending (not superseded)", out)
+	}
+	if out := tp.pool.AdminSwap("gamma"); out != AdminSuperseded {
+		t.Fatalf("replacing pending alpha with gamma = %v, want %v", out, AdminSuperseded)
+	}
+	if out := tp.pool.AdminSwap("beta"); out != AdminPending {
+		t.Fatalf("swap to in-flight target = %v, want pending", out)
+	}
+
+	// Release the swap: gamma (the last admin target) must win the chain.
+	tp.gates["beta"].Open()
+	waitFor(t, "gamma active after chain", func() bool {
+		s := tp.pool.Snapshot()
+		return s.State == StateActive && s.ActiveService == "gamma"
+	})
+}
+
 func TestOpRegistryTTLAndMatching(t *testing.T) {
 	mock := clock.NewMock()
 	r := newOpRegistry(mock)

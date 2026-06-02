@@ -460,7 +460,14 @@ func (p *Pool) handleAdminSwap(service string) AdminOutcome {
 		if p.target == service {
 			return AdminPending // already heading there
 		}
+		replaced := p.adminPending != "" && p.adminPending != service
 		p.adminPending = service
+		if replaced {
+			// Last-wins, but say so: the earlier pending target was
+			// silently dropped before this outcome existed.
+			p.log.Warn("admin swap superseded a pending admin swap", "new", service)
+			return AdminSuperseded
+		}
 		return AdminPending
 	default: // Idle, Error
 		p.startSwap(service)

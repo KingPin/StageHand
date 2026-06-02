@@ -46,7 +46,8 @@ type tpOpts struct {
 	grace      time.Duration
 	cooldown   time.Duration
 	defaultSvc string
-	maxQueue   int // default 10
+	maxQueue   int      // default 10
+	services   []string // default ["alpha", "beta"]
 	held       []string
 }
 
@@ -57,12 +58,19 @@ func newTestPoolOpts(t *testing.T, clk clock.Clock, o tpOpts) *testPool {
 	if o.maxQueue == 0 {
 		o.maxQueue = 10
 	}
+	if len(o.services) == 0 {
+		o.services = []string{"alpha", "beta"}
+	}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	docker := dockerctl.NewFake("alpha-c", "beta-c")
+	containers := make([]string, len(o.services))
+	for i, svc := range o.services {
+		containers[i] = svc + "-c"
+	}
+	docker := dockerctl.NewFake(containers...)
 
 	gates := map[string]*healthGate{}
-	members := make([]MemberConfig, 0, 2)
-	for _, svc := range []string{"alpha", "beta"} {
+	members := make([]MemberConfig, 0, len(o.services))
+	for _, svc := range o.services {
 		gate := &healthGate{}
 		if !slices.Contains(o.held, svc) {
 			gate.Open()
