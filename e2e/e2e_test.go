@@ -91,7 +91,7 @@ func setup(t *testing.T) (*server.Server, dockerctl.Client) {
 	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	srv, err := server.New(cfg, docker, clock.New(), log)
+	srv, err := server.New(cfg, docker, clock.New(), log, server.AuthOptions{AdminDisabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -45,6 +45,19 @@ type runtime struct {
 	services    map[string]*service
 	pools       map[string]*orchestrator.Pool
 	poolSigs    map[string]string // pool name -> config signature
+	// adminToken gates /stagehand/* ("" = admin auth disabled); proxyToken
+	// gates all other traffic ("" = open). Resolved per revision so a hot
+	// reload can change tokens (PRD §5).
+	adminToken string
+	proxyToken string
+}
+
+// AuthOptions carries the process-level auth decisions made at boot, before
+// any config revision: whether admin auth was explicitly disabled via env, and
+// the stable fallback admin token to use when no admin_token is configured.
+type AuthOptions struct {
+	AdminDisabled bool
+	GenAdminToken string
 }
 
 // Server hosts StageHand's HTTP surface.
@@ -59,18 +72,20 @@ type Server struct {
 	reloadMu sync.Mutex // serializes Reload; handlers stay lock-free
 	cfgPath  string     // source for ReloadFromSource ("" = disabled)
 	adminMux *http.ServeMux
+	auth     AuthOptions // process-level auth decisions, fixed for the run
 }
 
 // New builds the full runtime from a validated config: one orchestrator
 // pool per vram_pool, a reverse proxy per service, the events watcher
 // (caller runs it), and the route table.
-func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog.Logger) (*Server, error) {
+func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog.Logger, auth AuthOptions) (*Server, error) {
 	s := &Server{
 		log:     log,
 		docker:  docker,
 		clk:     clk,
 		watcher: orchestrator.NewWatcher(docker, log),
 		tracker: proxy.NewConnTracker(),
+		auth:    auth,
 	}
 	rt, err := s.buildRuntime(cfg, nil)
 	if err != nil {
@@ -116,6 +131,8 @@ func (s *Server) buildRuntime(cfg *config.Config, prev *runtime) (*runtime, erro
 		services:    make(map[string]*service, len(cfg.Services)),
 		pools:       map[string]*orchestrator.Pool{},
 		poolSigs:    map[string]string{},
+		adminToken:  s.resolveAdminToken(cfg),
+		proxyToken:  cfg.Server.Auth.ProxyToken,
 	}
 
 	for poolName, poolCfg := range cfg.VRAMPools {
@@ -158,6 +175,21 @@ func (s *Server) buildRuntime(cfg *config.Config, prev *runtime) (*runtime, erro
 		rt.services[name] = rt2
 	}
 	return rt, nil
+}
+
+// resolveAdminToken returns the admin token effective for cfg (PRD §5):
+// "" when admin auth was disabled at boot; the configured admin_token when
+// set; otherwise the process-stable generated fallback. Resolving it per
+// runtime keeps it hot-reload-safe while the generated fallback stays stable
+// across reloads.
+func (s *Server) resolveAdminToken(cfg *config.Config) string {
+	if s.auth.AdminDisabled {
+		return ""
+	}
+	if cfg.Server.Auth.AdminToken != "" {
+		return cfg.Server.Auth.AdminToken
+	}
+	return s.auth.GenAdminToken
 }
 
 // Reload applies a new validated configuration (PRD §7). New requests
