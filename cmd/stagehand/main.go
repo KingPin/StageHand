@@ -73,17 +73,21 @@ func run() error {
 		log.Warn("config warning", "warning", w)
 	}
 
-	// Admin auth is on by default: with no configured token (and not disabled)
-	// generate a random one and print it once so the operator can use it.
+	// Admin auth is on by default. Always mint a process-stable fallback token
+	// when auth is not disabled, so a hot reload that drops admin_token can
+	// never leave the control plane unauthenticated. Only surface it when it's
+	// actually the active token (no admin_token configured at boot).
 	auth := server.AuthOptions{AdminDisabled: adminAuthDisabled}
-	if !adminAuthDisabled && cfg.Server.Auth.AdminToken == "" {
+	if !adminAuthDisabled {
 		token, err := generateToken()
 		if err != nil {
 			return fmt.Errorf("generating admin token: %w", err)
 		}
 		auth.GenAdminToken = token
-		log.Warn("no server.auth.admin_token configured; generated a random admin token for this session",
-			"header", "X-Stagehand-Admin-Token", "token", token)
+		if cfg.Server.Auth.AdminToken == "" {
+			log.Warn("no server.auth.admin_token configured; generated a random admin token for this session",
+				"header", "X-Stagehand-Admin-Token", "token", token)
+		}
 	}
 
 	docker, err := dockerctl.Connect(cfg.Server.DockerSocketPath)

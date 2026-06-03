@@ -135,6 +135,16 @@ func (s *Server) buildRuntime(cfg *config.Config, prev *runtime) (*runtime, erro
 		proxyToken:  cfg.Server.Auth.ProxyToken,
 	}
 
+	// Fail safe: an empty adminToken means "admin auth off", which must only
+	// happen when it was explicitly disabled. If auth is enabled but nothing
+	// resolved (no config token, no generated fallback), refuse to build the
+	// runtime rather than silently expose the control plane — this also makes
+	// a hot reload that drops admin_token without a fallback get rejected.
+	if !s.auth.AdminDisabled && rt.adminToken == "" {
+		return nil, fmt.Errorf("admin auth is enabled but no admin token is available: " +
+			"set server.auth.admin_token or provide a generated fallback")
+	}
+
 	for poolName, poolCfg := range cfg.VRAMPools {
 		members := poolMembers(cfg, poolName)
 		sig := poolSignature(poolCfg, members)

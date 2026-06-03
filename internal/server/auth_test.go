@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -18,14 +19,17 @@ import (
 type authRig struct {
 	front       *httptest.Server
 	gotProxyHdr *atomic.Value // last proxyTokenHeader value the backend saw
+	gotAdminHdr *atomic.Value // last adminTokenHeader value the backend saw
 }
 
 func newAuthRig(t *testing.T, adminCfgToken, proxyCfgToken string, opts AuthOptions) authRig {
 	t.Helper()
-	seen := &atomic.Value{}
-	seen.Store("")
+	proxyHdr, adminHdr := &atomic.Value{}, &atomic.Value{}
+	proxyHdr.Store("")
+	adminHdr.Store("")
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen.Store(r.Header.Get(proxyTokenHeader))
+		proxyHdr.Store(r.Header.Get(proxyTokenHeader))
+		adminHdr.Store(r.Header.Get(adminTokenHeader))
 		w.WriteHeader(http.StatusOK)
 		io.WriteString(w, "ok")
 	}))
@@ -53,7 +57,7 @@ func newAuthRig(t *testing.T, adminCfgToken, proxyCfgToken string, opts AuthOpti
 	t.Cleanup(srv.Close)
 	front := httptest.NewServer(srv.Handler())
 	t.Cleanup(front.Close)
-	return authRig{front: front, gotProxyHdr: seen}
+	return authRig{front: front, gotProxyHdr: proxyHdr, gotAdminHdr: adminHdr}
 }
 
 func (a authRig) do(t *testing.T, method, path string, headers map[string]string) *http.Response {
@@ -158,16 +162,45 @@ func TestAuthProxyOpenWhenUnset(t *testing.T) {
 	}
 }
 
-func TestAuthProxyHeaderStrippedFromBackend(t *testing.T) {
+func TestAuthTokenHeadersStrippedFromBackend(t *testing.T) {
 	const token = "proxy-secret-token-1234"
 	rig := newAuthRig(t, "", token, AuthOptions{AdminDisabled: true})
 
-	resp := rig.do(t, http.MethodGet, "/proxy", map[string]string{proxyTokenHeader: token})
+	// Send both StageHand secrets; neither must reach the backend.
+	resp := rig.do(t, http.MethodGet, "/proxy", map[string]string{
+		proxyTokenHeader: token,
+		adminTokenHeader: "an-admin-token-a-client-happened-to-send",
+	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	if got := rig.gotProxyHdr.Load().(string); got != "" {
 		t.Errorf("backend saw %s = %q, want it stripped", proxyTokenHeader, got)
+	}
+	if got := rig.gotAdminHdr.Load().(string); got != "" {
+		t.Errorf("backend saw %s = %q, want it stripped", adminTokenHeader, got)
+	}
+}
+
+func TestAuthRuntimeRejectedWhenEnabledButNoToken(t *testing.T) {
+	// Admin auth enabled (not disabled) but neither a config token nor a
+	// generated fallback: New must refuse rather than silently expose
+	// /stagehand/*.
+	docker := dockerctl.NewFake("gamma-c")
+	cfg := &config.Config{
+		Server: config.Server{Host: "127.0.0.1", Port: 8080, MaxQueueSize: 10},
+		Services: map[string]config.Service{
+			"gamma": {ContainerName: "gamma-c", TargetURL: "http://gamma-c:9", HealthPath: "/", StartupTimeoutSeconds: 30},
+		},
+		Routes: []config.Route{{PathPrefix: "/proxy", Service: "gamma"}},
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	_, err := New(cfg, docker, clock.New(), log, AuthOptions{})
+	if err == nil {
+		t.Fatal("New succeeded, want error for enabled admin auth with no token")
+	}
+	if !strings.Contains(err.Error(), "no admin token") {
+		t.Errorf("error = %v, want it to mention the missing admin token", err)
 	}
 }
 

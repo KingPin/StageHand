@@ -43,7 +43,10 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			"missing or invalid "+proxyTokenHeader)
 		return
 	}
+	// Both token headers are StageHand-specific secrets; strip them so a
+	// client that sends either never leaks it to a backend.
 	r.Header.Del(proxyTokenHeader)
+	r.Header.Del(adminTokenHeader)
 
 	match, ok := rt.router.Match(r.URL.Path, r.Header, "")
 	if ok && match.NeedsModel && r.Method == http.MethodPost && hasJSONBody(r) {
