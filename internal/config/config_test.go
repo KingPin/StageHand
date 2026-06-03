@@ -203,6 +203,56 @@ func TestLocalhostWarning(t *testing.T) {
 	}
 }
 
+func TestAuthParses(t *testing.T) {
+	y := strings.Replace(minimalValid, "  port: 8080",
+		"  port: 8080\n  auth:\n    admin_token: \"a-sufficiently-long-admin-token\"\n    proxy_token: \"proxy-secret\"", 1)
+	cfg, warnings, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+	if cfg.Server.Auth.AdminToken != "a-sufficiently-long-admin-token" {
+		t.Errorf("AdminToken = %q", cfg.Server.Auth.AdminToken)
+	}
+	if cfg.Server.Auth.ProxyToken != "proxy-secret" {
+		t.Errorf("ProxyToken = %q", cfg.Server.Auth.ProxyToken)
+	}
+}
+
+func TestAuthOmittedIsValid(t *testing.T) {
+	// No auth block at all: admin token auto-generates at boot, proxy is open.
+	cfg, _, err := Parse([]byte(minimalValid))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Server.Auth.AdminToken != "" || cfg.Server.Auth.ProxyToken != "" {
+		t.Errorf("expected empty auth tokens, got %+v", cfg.Server.Auth)
+	}
+}
+
+func TestAuthBlankTokenRejected(t *testing.T) {
+	y := strings.Replace(minimalValid, "  port: 8080",
+		"  port: 8080\n  auth:\n    admin_token: \"   \"", 1)
+	_, _, err := Parse([]byte(y))
+	if err == nil || !strings.Contains(err.Error(), "must not be blank") {
+		t.Fatalf("err = %v, want blank-token error", err)
+	}
+}
+
+func TestAuthShortTokenWarns(t *testing.T) {
+	y := strings.Replace(minimalValid, "  port: 8080",
+		"  port: 8080\n  auth:\n    admin_token: \"short\"", 1)
+	_, warnings, err := Parse([]byte(y))
+	if err != nil {
+		t.Fatalf("Parse: %v (short token should warn, not fail)", err)
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "shorter than 16") {
+		t.Errorf("warnings = %v, want one short-token warning", warnings)
+	}
+}
+
 func TestExampleConfigIsValid(t *testing.T) {
 	raw, err := os.ReadFile("../../config.example.yaml")
 	if err != nil {

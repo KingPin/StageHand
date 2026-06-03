@@ -29,6 +29,20 @@ func (c *Config) validate() ([]string, error) {
 		fail("server.max_queue_size must be >= 1, got %d", c.Server.MaxQueueSize)
 	}
 
+	// --- server auth ---
+	// An omitted token (empty string) is valid: admin auth auto-generates a
+	// token, proxy auth stays off. But a whitespace-only token is almost
+	// certainly a mistake, and a short admin token is weak.
+	if t := c.Server.Auth.AdminToken; t != "" && strings.TrimSpace(t) == "" {
+		fail("server.auth.admin_token must not be blank/whitespace-only")
+	}
+	if t := c.Server.Auth.ProxyToken; t != "" && strings.TrimSpace(t) == "" {
+		fail("server.auth.proxy_token must not be blank/whitespace-only")
+	}
+	if t := c.Server.Auth.AdminToken; t != "" && len(t) < 16 {
+		warn("server.auth.admin_token is shorter than 16 characters — use a longer, high-entropy token")
+	}
+
 	// --- services ---
 	if len(c.Services) == 0 {
 		fail("at least one service must be declared")
