@@ -24,9 +24,29 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	setCORSOrigin(w, r, rt.corsOrigins)
 
 	if strings.HasPrefix(r.URL.Path, "/stagehand/") {
+		// Admin auth (PRD §5): rt.adminToken == "" means it was explicitly
+		// disabled (STAGEHAND_DISABLE_ADMIN_AUTH); otherwise a token is required.
+		if rt.adminToken != "" && !checkToken(r, adminTokenHeader, rt.adminToken) {
+			writeError(w, http.StatusUnauthorized, "admin authentication required",
+				"missing or invalid "+adminTokenHeader)
+			return
+		}
 		s.adminMux.ServeHTTP(w, r)
 		return
 	}
+
+	// Optional proxy auth (PRD §5): when a proxy token is configured, every
+	// non-admin request must carry it. The gate header is stripped before
+	// forwarding so it never reaches a backend.
+	if rt.proxyToken != "" && !checkToken(r, proxyTokenHeader, rt.proxyToken) {
+		writeError(w, http.StatusUnauthorized, "authentication required",
+			"missing or invalid "+proxyTokenHeader)
+		return
+	}
+	// Both token headers are StageHand-specific secrets; strip them so a
+	// client that sends either never leaks it to a backend.
+	r.Header.Del(proxyTokenHeader)
+	r.Header.Del(adminTokenHeader)
 
 	match, ok := rt.router.Match(r.URL.Path, r.Header, "")
 	if ok && match.NeedsModel && r.Method == http.MethodPost && hasJSONBody(r) {

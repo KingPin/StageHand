@@ -8,6 +8,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -25,6 +27,11 @@ import (
 	"github.com/KingPin/StageHand/internal/server"
 	"github.com/KingPin/StageHand/internal/version"
 )
+
+// disableAdminAuthEnv is the explicit, env-only escape hatch that turns off
+// admin authentication (PRD §5). Env vars are trusted; this is read once at
+// boot and cannot be flipped by a config hot-reload.
+const disableAdminAuthEnv = "STAGEHAND_DISABLE_ADMIN_AUTH"
 
 func main() {
 	if err := run(); err != nil {
@@ -51,12 +58,36 @@ func run() error {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
 
+	// Resolve admin-auth disabling before anything else so the warning banner
+	// lands at the very top of the console on every startup (PRD §5).
+	adminAuthDisabled := adminAuthDisabledFromEnv(log)
+	if adminAuthDisabled {
+		printNoAdminAuthBanner()
+	}
+
 	cfg, warnings, err := config.Load(*cfgPath)
 	if err != nil {
 		return fmt.Errorf("loading %s: %w", *cfgPath, err)
 	}
 	for _, w := range warnings {
 		log.Warn("config warning", "warning", w)
+	}
+
+	// Admin auth is on by default. Always mint a process-stable fallback token
+	// when auth is not disabled, so a hot reload that drops admin_token can
+	// never leave the control plane unauthenticated. Only surface it when it's
+	// actually the active token (no admin_token configured at boot).
+	auth := server.AuthOptions{AdminDisabled: adminAuthDisabled}
+	if !adminAuthDisabled {
+		token, err := generateToken()
+		if err != nil {
+			return fmt.Errorf("generating admin token: %w", err)
+		}
+		auth.GenAdminToken = token
+		if cfg.Server.Auth.AdminToken == "" {
+			log.Warn("no server.auth.admin_token configured; generated a random admin token for this session",
+				"header", "X-Stagehand-Admin-Token", "token", token)
+		}
 	}
 
 	docker, err := dockerctl.Connect(cfg.Server.DockerSocketPath)
@@ -75,7 +106,7 @@ func run() error {
 	}
 	log.Info("boot validation passed", "containers", len(names))
 
-	srv, err := server.New(cfg, docker, clock.New(), log)
+	srv, err := server.New(cfg, docker, clock.New(), log, auth)
 	if err != nil {
 		return err
 	}
@@ -104,4 +135,44 @@ func run() error {
 
 	log.Info("starting stagehand", "version", version.Version, "config", *cfgPath)
 	return srv.Run(ctx, ln)
+}
+
+// adminAuthDisabledFromEnv reports whether STAGEHAND_DISABLE_ADMIN_AUTH is set
+// to a truthy value. A set-but-unparseable value keeps auth enabled (fail
+// safe) and is surfaced as a warning.
+func adminAuthDisabledFromEnv(log *slog.Logger) bool {
+	v, ok := os.LookupEnv(disableAdminAuthEnv)
+	if !ok {
+		return false
+	}
+	disabled, err := strconv.ParseBool(v)
+	if err != nil {
+		log.Warn("ignoring "+disableAdminAuthEnv+": not a boolean; admin auth stays enabled", "value", v)
+		return false
+	}
+	return disabled
+}
+
+// printNoAdminAuthBanner writes a hard-to-miss warning to stderr that the
+// admin control plane is unauthenticated.
+func printNoAdminAuthBanner() {
+	const banner = `
+########################################################################
+#  WARNING: ADMIN AUTHENTICATION IS DISABLED                           #
+#  ` + disableAdminAuthEnv + ` is set.
+#  The /stagehand/* control plane (status, swap, pool stop, reload)    #
+#  is reachable WITHOUT any token. Do not expose this listener on an   #
+#  untrusted network.                                                  #
+########################################################################
+`
+	fmt.Fprint(os.Stderr, banner)
+}
+
+// generateToken returns a 256-bit URL-safe random token.
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

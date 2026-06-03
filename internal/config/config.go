@@ -34,6 +34,18 @@ type Server struct {
 	DockerSocketPath   string   `yaml:"docker_socket_path"`
 	CORSAllowedOrigins []string `yaml:"cors_allowed_origins"`
 	MaxQueueSize       int      `yaml:"max_queue_size"`
+	Auth               Auth     `yaml:"auth"`
+}
+
+// Auth holds the optional API tokens that gate StageHand's HTTP surface
+// (PRD §5). An empty AdminToken means StageHand generates a random one at
+// boot and prints it once (admin auth is on by default); an empty ProxyToken
+// leaves regular proxied traffic unauthenticated. Tokens are presented in
+// dedicated headers and compared in constant time, never reflected to
+// backends.
+type Auth struct {
+	AdminToken string `yaml:"admin_token"`
+	ProxyToken string `yaml:"proxy_token"`
 }
 
 // VRAMPool is a mutual-exclusion group: at most one member service's

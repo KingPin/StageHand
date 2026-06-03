@@ -305,6 +305,28 @@ Browser frontends run on separate origins (e.g., `http://localhost:3000`):
   - `Access-Control-Allow-Headers: <echo of Access-Control-Request-Headers>`
   - `Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE`
 
+### 5.4 Authentication
+
+The admin API (§5.1, §5.2) and the proxy share one listener, so the control
+plane must be authenticated. Tokens come from `server.auth` and are compared in
+constant time; both checks run after CORS preflight, so `OPTIONS` is never
+gated.
+
+- **Admin auth — on by default.** Every `/stagehand/*` request must carry
+  `server.auth.admin_token` in the `X-Stagehand-Admin-Token` header; otherwise
+  `401`. If `admin_token` is omitted, StageHand generates a random token at boot
+  and logs it once. The escape hatch is the `STAGEHAND_DISABLE_ADMIN_AUTH`
+  environment variable: when truthy it disables admin auth entirely, and a
+  warning banner is printed at the top of the console on **every** startup. The
+  env switch is read once at boot and is not affected by hot reload.
+- **Proxy auth — optional.** When `server.auth.proxy_token` is set, every
+  non-admin request must carry it in the `X-Stagehand-Token` header; otherwise
+  `401`. This header is stripped before forwarding so it never reaches a
+  backend. `Authorization` is left untouched for pass-through to backends.
+
+`admin_token`/`proxy_token` are hot-reloadable (§7); the disable switch and the
+auto-generated fallback token are fixed for the process lifetime.
+
 ## 6. Docker Lifecycle Guardrails & Edge Cases
 
 - **Docker SDK:** StageHand uses the official Docker Go SDK with automatic API

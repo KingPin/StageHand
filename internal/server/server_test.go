@@ -122,7 +122,8 @@ func newRigParts(t *testing.T, maxQueue int) (*Server, *dockerctl.FakeClient, ma
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv, err := New(cfg, docker, clock.New(), log)
+	// Auth is exercised separately (auth_test.go); keep the shared rig open.
+	srv, err := New(cfg, docker, clock.New(), log, AuthOptions{AdminDisabled: true})
 	if err != nil {
 		t.Fatalf("server.New: %v", err)
 	}

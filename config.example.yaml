@@ -7,6 +7,18 @@ server:
   cors_allowed_origins: ["*"]     # Allowed origins for web-UI integrations
   max_queue_size: 100             # Default per-service queue bound
 
+  # Authentication (PRD §5). Tokens are sent in dedicated headers and
+  # compared in constant time.
+  # auth:
+  #   # Gates the /stagehand/* admin API via the X-Stagehand-Admin-Token
+  #   # header. If omitted, StageHand generates a random token at boot and
+  #   # prints it once. Set STAGEHAND_DISABLE_ADMIN_AUTH=true to turn admin
+  #   # auth off entirely (a warning banner then prints on every startup).
+  #   admin_token: "change-me-to-a-long-random-value"
+  #   # Optional: when set, all proxied (non-admin) traffic must send this
+  #   # token in the X-Stagehand-Token header. Omit to leave the proxy open.
+  #   proxy_token: "another-long-random-value"
+
 # Mutual Exclusion Pools — at most one member container runs at a time.
 vram_pools:
   gpu_0_vram:
