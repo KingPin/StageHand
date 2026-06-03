@@ -101,6 +101,8 @@ client ──> stagehand :8080 ──┬─> [gpu pool] comfyui      (swapped on
 | `docker_socket_path` | `/var/run/docker.sock` | Docker daemon socket |
 | `cors_allowed_origins` | — | `["*"]` or explicit origins; preflights echo requested headers |
 | `max_queue_size` | `100` | Default per-service queue bound |
+| `auth.admin_token` | auto-generated | Token for the `/stagehand/*` admin API (see [Authentication](#authentication)) |
+| `auth.proxy_token` | — | When set, all proxied traffic must present it; omit to leave the proxy open |
 
 ### `vram_pools.<name>`
 
@@ -143,6 +145,27 @@ Unmatched requests get `404` with the known-route list in the body.
 
 Everything else proxies per your routes — including SSE streams and
 WebSocket upgrades.
+
+### Authentication
+
+- **Admin API (on by default).** Every `/stagehand/*` request must carry the
+  admin token in the `X-Stagehand-Admin-Token` header. Set it via
+  `server.auth.admin_token`; if you omit it, StageHand generates a random token
+  at boot and logs it once (look for `generated a random admin token`).
+- **Proxy traffic (opt-in).** Set `server.auth.proxy_token` to require the
+  `X-Stagehand-Token` header on all non-admin requests. StageHand strips this
+  header before forwarding, so it never reaches a backend. Leave it unset to
+  keep the proxy open. (`Authorization` is passed through untouched for
+  backends that need it.)
+- **Disabling admin auth.** Set the environment variable
+  `STAGEHAND_DISABLE_ADMIN_AUTH=true` to turn the admin gate off entirely. This
+  is the only way to disable it, and a warning banner prints at the top of the
+  console on every startup while it is set. Only do this behind a trusted
+  network boundary.
+
+Tokens are compared in constant time. Admin/proxy tokens are hot-reloadable
+(`SIGHUP`); the disable switch and the auto-generated token are fixed for the
+process lifetime.
 
 ## Behavior notes
 
