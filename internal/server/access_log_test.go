@@ -86,6 +86,13 @@ func TestStatusRecorderForwardsHijack(t *testing.T) {
 		t.Fatal("Hijack was not forwarded to the underlying writer")
 	}
 
+	// A successful hijack records 101 for access-log fidelity: WriteHeader
+	// is never called on a hijacked WebSocket connection, so without this
+	// the log would misreport the upgrade as status=200.
+	if sr.status != http.StatusSwitchingProtocols {
+		t.Errorf("after Hijack, sr.status = %d, want %d (101)", sr.status, http.StatusSwitchingProtocols)
+	}
+
 	// A writer that is not a Hijacker should fail gracefully (no panic).
 	srPlain := &statusRecorder{ResponseWriter: httptest.NewRecorder()}
 	if _, _, err := srPlain.Hijack(); err == nil {

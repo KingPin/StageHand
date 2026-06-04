@@ -47,13 +47,23 @@ func (r *statusRecorder) Flush() {
 }
 
 // Hijack forwards to the underlying writer so transparent WebSocket
-// tunneling keeps working.
+// tunneling keeps working. On a successful hijack it records the status as
+// 101 Switching Protocols — WriteHeader is never called on a hijacked
+// connection, so without this the access log would misreport every
+// WebSocket upgrade as status=200.
 func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hj, ok := r.ResponseWriter.(http.Hijacker)
 	if !ok {
 		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
 	}
-	return hj.Hijack()
+	conn, rw, err := hj.Hijack()
+	if err == nil {
+		// Record 101 and lock it so a later spurious WriteHeader can't
+		// overwrite it (a hijacked connection is semantically upgraded).
+		r.status = http.StatusSwitchingProtocols
+		r.written = true
+	}
+	return conn, rw, err
 }
 
 // logRequests logs one structured line per request: method, path, status,

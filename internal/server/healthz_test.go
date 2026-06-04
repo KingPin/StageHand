@@ -35,6 +35,15 @@ func TestLiveness(t *testing.T) {
 		}
 	})
 
+	t.Run("non-GET healthz requires token (carve-out is GET-only)", func(t *testing.T) {
+		// The healthz carve-out in the handler is GET-only; a POST falls
+		// through to the admin gate and must require a token.
+		resp := rig.do(t, http.MethodPost, "/stagehand/healthz", nil)
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("POST /stagehand/healthz (no token): status = %d, want 401", resp.StatusCode)
+		}
+	})
+
 	t.Run("status still requires token (carve-out is narrow)", func(t *testing.T) {
 		resp := rig.do(t, http.MethodGet, "/stagehand/status", nil)
 		if resp.StatusCode != http.StatusUnauthorized {

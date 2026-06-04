@@ -114,6 +114,9 @@ func (s *Server) Handler() http.Handler {
 // already started streaming when the panic fires, the 500 is best-effort:
 // WriteHeader becomes a logged no-op and the partially-sent response is torn
 // down by the client — the inherent limit of recover-based middleware.
+// For a hijacked WebSocket connection a panic during the handshake replay
+// (after hijack, before relay) is likewise absorbed without a 500 — copyConn
+// independently recovers relay-goroutine panics.
 func recoverPanics(next http.Handler, log *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
