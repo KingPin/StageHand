@@ -105,7 +105,7 @@ func (s *Server) SetConfigSource(path string) { s.cfgPath = path }
 // Handler returns the root HTTP handler, wrapped so a panic in the request
 // path becomes a 500 rather than a dropped connection.
 func (s *Server) Handler() http.Handler {
-	return recoverPanics(http.HandlerFunc(s.handle), s.log)
+	return recoverPanics(s.logRequests(http.HandlerFunc(s.handle)), s.log)
 }
 
 // recoverPanics converts a panic in the request path into a generic 500.
