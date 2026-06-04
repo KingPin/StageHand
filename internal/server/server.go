@@ -84,7 +84,7 @@ func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog
 		log:     log,
 		docker:  docker,
 		clk:     clk,
-		watcher: orchestrator.NewWatcher(docker, log),
+		watcher: orchestrator.NewWatcher(docker, clk, log),
 		tracker: proxy.NewConnTracker(),
 		auth:    auth,
 	}

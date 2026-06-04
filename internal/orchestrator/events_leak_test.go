@@ -7,6 +7,9 @@ import (
 	"log/slog"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/benbjohnson/clock"
 
 	"github.com/KingPin/StageHand/internal/dockerctl"
 )
@@ -41,7 +44,8 @@ func TestWatcherCancelsPriorSubscriptionContextOnResubscribe(t *testing.T) {
 	fake := dockerctl.NewFake("alpha-c")
 	rec := &ctxRecorder{FakeClient: fake}
 
-	w := NewWatcher(rec, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mc := clock.NewMock()
+	w := NewWatcher(rec, mc, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go w.Run(ctx)
@@ -50,10 +54,17 @@ func TestWatcherCancelsPriorSubscriptionContextOnResubscribe(t *testing.T) {
 		return len(rec.subscriptions()) >= 1
 	})
 
-	// Force a resubscribe.
+	// Force a resubscribe. The watcher cancels the prior subscription's
+	// context, then waits one second (mock clock) before resubscribing.
 	fake.EmitStreamError(errors.New("boom"))
 
+	// Advance the mock clock past the backoff so the resubscribe fires
+	// without sleeping in real time. We can't observe exactly when the
+	// watcher parks on w.clk.After, so we keep nudging the clock forward
+	// until the second subscription lands — each Add is a no-op once the
+	// timer has already fired.
 	waitFor(t, "second subscription after resubscribe", func() bool {
+		mc.Add(time.Second)
 		return len(rec.subscriptions()) >= 2
 	})
 

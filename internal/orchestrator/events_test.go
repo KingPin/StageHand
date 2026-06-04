@@ -15,7 +15,7 @@ import (
 // startWatcher runs a Watcher for the test pool's two containers.
 func startWatcher(t *testing.T, tp *testPool) {
 	t.Helper()
-	w := NewWatcher(tp.docker, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	w := NewWatcher(tp.docker, clock.New(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	w.Register("alpha-c", tp.pool)
 	w.Register("beta-c", tp.pool)
 	ctx, cancel := context.WithCancel(context.Background())
