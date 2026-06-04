@@ -181,3 +181,35 @@ func TestIsWebSocketUpgrade(t *testing.T) {
 		t.Error("keep-alive misdetected as upgrade")
 	}
 }
+
+// panicWriter is a Writer whose Write method always panics.
+type panicWriter struct{}
+
+func (panicWriter) Write(_ []byte) (int, error) { panic("write blew up") }
+
+// TestCopyConnRecoversPanic verifies that copyConn catches a panic in the
+// underlying Write and sends a non-nil error on errc instead of crashing.
+func TestCopyConnRecoversPanic(t *testing.T) {
+	errc := make(chan error, 1)
+	go copyConn(panicWriter{}, strings.NewReader("data"), errc)
+
+	err := <-errc
+	if err == nil {
+		t.Fatal("expected non-nil error from panicking writer, got nil")
+	}
+}
+
+// TestCopyConnNormal verifies that copyConn forwards bytes correctly and
+// sends nil on errc when the copy succeeds.
+func TestCopyConnNormal(t *testing.T) {
+	var buf strings.Builder
+	errc := make(chan error, 1)
+	go copyConn(&buf, strings.NewReader("hello"), errc)
+
+	if err := <-errc; err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+	if got := buf.String(); got != "hello" {
+		t.Fatalf("buf = %q, want %q", got, "hello")
+	}
+}
