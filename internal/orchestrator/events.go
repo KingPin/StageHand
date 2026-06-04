@@ -122,10 +122,13 @@ func (w *Watcher) ReplaceAll(routes map[string]*Pool) {
 }
 
 // Run consumes the events stream until ctx is cancelled, resubscribing
-// with backoff if the stream errors.
+// with backoff if the stream errors. Each subscription gets its own child
+// context that is cancelled before resubscribing, so the docker client's
+// per-subscription forwarder goroutine exits instead of leaking (PRD §6).
 func (w *Watcher) Run(ctx context.Context) {
-	for {
-		events, errs := w.docker.Events(ctx)
+	for ctx.Err() == nil {
+		subCtx, cancel := context.WithCancel(ctx)
+		events, errs := w.docker.Events(subCtx)
 		w.log.Info("docker events watcher subscribed")
 	consume:
 		for {
@@ -142,13 +145,13 @@ func (w *Watcher) Run(ctx context.Context) {
 				w.log.Error("docker events stream error; resubscribing", "err", err)
 				break consume
 			case <-ctx.Done():
-				return
+				break consume
 			}
 		}
+		cancel() // release this subscription's forwarder before resubscribing
 		select {
 		case <-time.After(time.Second):
 		case <-ctx.Done():
-			return
 		}
 	}
 }
