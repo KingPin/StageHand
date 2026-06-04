@@ -4,7 +4,7 @@ server:
   host: "0.0.0.0"
   port: 8080
   docker_socket_path: "/var/run/docker.sock"
-  cors_allowed_origins: ["*"]     # Allowed origins for web-UI integrations
+  cors_allowed_origins: ["https://app.example.com"]  # Allowed origins for web-UI integrations; avoid "*" in production
   max_queue_size: 100             # Default per-service queue bound
 
   # Authentication (PRD §5). Tokens are sent in dedicated headers and
