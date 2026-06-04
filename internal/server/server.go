@@ -102,13 +102,18 @@ func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog
 // (the /stagehand/reload endpoint and SIGHUP).
 func (s *Server) SetConfigSource(path string) { s.cfgPath = path }
 
-// Handler returns the root HTTP handler, wrapped so a panic in the request
-// path becomes a 500 rather than a dropped connection.
+// Handler returns the root HTTP handler. Access logging wraps panic
+// recovery (not the other way round) so a recovered panic still produces an
+// access-log line: recoverPanics turns the panic into a 500 on the
+// status-recording writer, then logRequests logs that final status. A panic
+// in the request path therefore becomes a logged 500 rather than a dropped,
+// unlogged connection.
 func (s *Server) Handler() http.Handler {
-	return recoverPanics(s.logRequests(http.HandlerFunc(s.handle)), s.log)
+	return s.logRequests(recoverPanics(http.HandlerFunc(s.handle), s.log))
 }
 
 // recoverPanics converts a panic in the request path into a generic 500.
+// It sits inside logRequests so the 500 it writes is captured and logged.
 // http.ErrAbortHandler is re-panicked so net/http's (and the reverse
 // proxy's) intentional-abort semantics are preserved. If the response has
 // already started streaming when the panic fires, the 500 is best-effort:

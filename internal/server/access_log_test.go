@@ -31,6 +31,28 @@ func TestAccessLogCapturesStatus(t *testing.T) {
 	}
 }
 
+// TestAccessLogLogsRecoveredPanic verifies the production middleware order
+// (logRequests wrapping recoverPanics): a handler that panics is turned into
+// a 500 by recoverPanics and that final status is still access-logged,
+// rather than the log line being lost as the panic unwinds.
+func TestAccessLogLogsRecoveredPanic(t *testing.T) {
+	var buf bytes.Buffer
+	s := &Server{log: slog.New(slog.NewTextHandler(&buf, nil)), clk: clock.New()}
+
+	panicking := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("boom")
+	})
+	h := s.logRequests(recoverPanics(panicking, s.log))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/x", nil))
+
+	// status=500 appears only in the request log line (the panic Error log
+	// carries no status field), so finding it proves the request was logged
+	// with the recovered status.
+	if line := buf.String(); !strings.Contains(line, "status=500") {
+		t.Errorf("recovered-panic request not logged with status=500; got %q", line)
+	}
+}
+
 func TestAccessLogDefaultStatus200(t *testing.T) {
 	var buf bytes.Buffer
 	s := &Server{log: slog.New(slog.NewTextHandler(&buf, nil)), clk: clock.New()}

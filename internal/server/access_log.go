@@ -67,16 +67,21 @@ func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 }
 
 // logRequests logs one structured line per request: method, path, status,
-// and wall-clock duration (timed with the injected clock).
+// and wall-clock duration (timed with the injected clock). The log is
+// emitted from a defer so a request that panics — and is turned into a 500
+// by the inner recoverPanics, or re-panicked as http.ErrAbortHandler — is
+// still logged with whatever final status was captured.
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := s.clk.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		defer func() {
+			s.log.Info("request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"duration_ms", s.clk.Since(start).Milliseconds())
+		}()
 		next.ServeHTTP(rec, r)
-		s.log.Info("request",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"status", rec.status,
-			"duration_ms", s.clk.Since(start).Milliseconds())
 	})
 }
