@@ -26,7 +26,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 
 	// Unauthenticated liveness probe — short-circuits BEFORE the admin-token
 	// gate so Docker/k8s health checks work without a token (PRD §5.4).
-	if r.URL.Path == "/stagehand/healthz" {
+	if r.Method == http.MethodGet && r.URL.Path == "/stagehand/healthz" {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version.Version})
 		return
 	}

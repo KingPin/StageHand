@@ -41,4 +41,37 @@ func TestLiveness(t *testing.T) {
 			t.Errorf("GET /stagehand/status (no token): status = %d, want 401", resp.StatusCode)
 		}
 	})
+
+	t.Run("healthz 200 when admin auth disabled", func(t *testing.T) {
+		// Admin auth explicitly disabled — carve-out must still respond 200.
+		noAuthRig := newAuthRig(t, "", "", AuthOptions{AdminDisabled: true})
+		resp := noAuthRig.do(t, http.MethodGet, "/stagehand/healthz", nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /stagehand/healthz (auth disabled): status = %d, want 200", resp.StatusCode)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decoding response body: %v", err)
+		}
+		if got := body["status"]; got != "ok" {
+			t.Errorf(`body["status"] = %q, want "ok"`, got)
+		}
+	})
+
+	t.Run("healthz 200 with proxy token set and no token sent", func(t *testing.T) {
+		// Both admin AND proxy tokens set — healthz must still be reachable
+		// with no tokens (carve-out sits above the proxy gate too).
+		bothRig := newAuthRig(t, "admin-tok", "proxy-tok", AuthOptions{})
+		resp := bothRig.do(t, http.MethodGet, "/stagehand/healthz", nil) // no proxy token
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /stagehand/healthz (no tokens, proxy gate active): status = %d, want 200", resp.StatusCode)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decoding response body: %v", err)
+		}
+		if got := body["status"]; got != "ok" {
+			t.Errorf(`body["status"] = %q, want "ok"`, got)
+		}
+	})
 }
