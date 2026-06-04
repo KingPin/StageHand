@@ -130,6 +130,46 @@ func TestTunnelRelaysBackendRejection(t *testing.T) {
 	}
 }
 
+// hijackerThatFails advertises http.Hijacker but its Hijack always fails,
+// mimicking a status-recording middleware wrapped over a ResponseWriter that
+// is not itself a Hijacker — the w.(http.Hijacker) assertion succeeds, yet
+// the actual hijack cannot.
+type hijackerThatFails struct{ http.ResponseWriter }
+
+func (hijackerThatFails) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, fmt.Errorf("underlying writer does not support hijacking")
+}
+
+// TestTunnelWrites500WhenHijackFails verifies that when the client hijack
+// fails (rather than the writer simply not advertising Hijacker), the client
+// still receives a 500 instead of a dropped, half-open connection.
+func TestTunnelWrites500WhenHijackFails(t *testing.T) {
+	backend := wsEchoBackend(t)
+	defer backend.Close()
+	target := mustParse(t, backend.URL)
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = Tunnel(hijackerThatFails{w}, r, target, nil, discardLogger())
+	}))
+	defer front.Close()
+
+	u, _ := url.Parse(front.URL)
+	conn, err := net.DialTimeout("tcp", u.Host, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n", u.Host)
+
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	status, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("reading response: %v", err)
+	}
+	if !strings.Contains(status, "500") {
+		t.Errorf("client saw %q, want a 500 when hijack fails", status)
+	}
+}
+
 func TestConnTrackerCloseAll(t *testing.T) {
 	backend := wsEchoBackend(t)
 	defer backend.Close()

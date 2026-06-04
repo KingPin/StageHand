@@ -99,6 +99,12 @@ func Tunnel(w http.ResponseWriter, r *http.Request, target *url.URL, tracker *Co
 	}
 	client, clientBuf, err := hj.Hijack()
 	if err != nil {
+		// The writer advertised http.Hijacker but the hijack failed (e.g. a
+		// status-recording wrapper over a non-Hijacker writer, where the
+		// w.(http.Hijacker) check above can't tell). The connection was not
+		// hijacked, so we can still answer the client with a 500 instead of
+		// dropping it half-open.
+		http.Error(w, "websocket unsupported", http.StatusInternalServerError)
 		return fmt.Errorf("hijacking client connection: %w", err)
 	}
 	defer client.Close()
