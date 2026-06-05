@@ -20,4 +20,6 @@ RUN CGO_ENABLED=0 go build -trimpath \
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/stagehand /stagehand
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["/stagehand", "-healthcheck", "-config", "/etc/stagehand/config.yaml"]
 ENTRYPOINT ["/stagehand", "-config", "/etc/stagehand/config.yaml"]

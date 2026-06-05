@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -83,7 +84,7 @@ func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog
 		log:     log,
 		docker:  docker,
 		clk:     clk,
-		watcher: orchestrator.NewWatcher(docker, log),
+		watcher: orchestrator.NewWatcher(docker, clk, log),
 		tracker: proxy.NewConnTracker(),
 		auth:    auth,
 	}
@@ -101,8 +102,44 @@ func New(cfg *config.Config, docker dockerctl.Client, clk clock.Clock, log *slog
 // (the /stagehand/reload endpoint and SIGHUP).
 func (s *Server) SetConfigSource(path string) { s.cfgPath = path }
 
-// Handler returns the root HTTP handler.
-func (s *Server) Handler() http.Handler { return http.HandlerFunc(s.handle) }
+// Handler returns the root HTTP handler. Access logging wraps panic
+// recovery (not the other way round) so a recovered panic still produces an
+// access-log line: recoverPanics turns the panic into a 500 on the
+// status-recording writer, then logRequests logs that final status. A panic
+// in the request path therefore becomes a logged 500 rather than a dropped,
+// unlogged connection.
+func (s *Server) Handler() http.Handler {
+	return s.logRequests(recoverPanics(http.HandlerFunc(s.handle), s.log))
+}
+
+// recoverPanics converts a panic in the request path into a generic 500.
+// It sits inside logRequests so the 500 it writes is captured and logged.
+// http.ErrAbortHandler is re-panicked so net/http's (and the reverse
+// proxy's) intentional-abort semantics are preserved. If the response has
+// already started streaming when the panic fires, the 500 is best-effort:
+// WriteHeader becomes a logged no-op and the partially-sent response is torn
+// down by the client — the inherent limit of recover-based middleware.
+// For a hijacked WebSocket connection a panic during the handshake replay
+// (after hijack, before relay) is likewise absorbed without a 500 — copyConn
+// independently recovers relay-goroutine panics.
+func recoverPanics(next http.Handler, log *slog.Logger) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			rec := recover()
+			if rec == nil {
+				return
+			}
+			if rec == http.ErrAbortHandler {
+				panic(rec)
+			}
+			log.Error("panic recovered in request handler",
+				"method", r.Method, "path", r.URL.Path, "panic", rec,
+				"stack", string(debug.Stack()))
+			writeError(w, http.StatusInternalServerError, "internal server error", "")
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
 
 // Watcher returns the docker events watcher; the caller owns running it.
 func (s *Server) Watcher() *orchestrator.Watcher { return s.watcher }

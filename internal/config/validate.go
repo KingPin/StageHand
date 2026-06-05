@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 )
 
@@ -41,6 +42,10 @@ func (c *Config) validate() ([]string, error) {
 	}
 	if t := c.Server.Auth.AdminToken; t != "" && len(t) < 16 {
 		warn("server.auth.admin_token is shorter than 16 characters — use a longer, high-entropy token")
+	}
+	if slices.Contains(c.Server.CORSAllowedOrigins, "*") {
+		warn(`server.cors_allowed_origins contains "*" — every origin is allowed; ` +
+			`set an explicit allowlist for browser-facing deployments`)
 	}
 
 	// --- services ---

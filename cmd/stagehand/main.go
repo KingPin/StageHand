@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -44,11 +45,16 @@ func run() error {
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
 	debug := flag.Bool("debug", false, "enable debug logging")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	healthcheck := flag.Bool("healthcheck", false, "probe /stagehand/healthz and exit (for Docker HEALTHCHECK)")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("stagehand", version.Version)
 		return nil
+	}
+
+	if *healthcheck {
+		return runHealthcheck(*cfgPath)
 	}
 
 	level := slog.LevelInfo
@@ -175,4 +181,25 @@ func generateToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// runHealthcheck probes the local /stagehand/healthz endpoint.
+// It loads the config only to read Server.Port; a 200 response exits 0,
+// anything else (non-200, network error, timeout) exits non-zero.
+func runHealthcheck(cfgPath string) error {
+	cfg, _, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("healthcheck: loading config %s: %w", cfgPath, err)
+	}
+	url := "http://127.0.0.1:" + strconv.Itoa(cfg.Server.Port) + "/stagehand/healthz"
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return fmt.Errorf("healthcheck: GET %s: %w", url, err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("healthcheck: %s returned %d", url, resp.StatusCode)
+	}
+	return nil
 }

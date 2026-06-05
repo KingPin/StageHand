@@ -99,6 +99,12 @@ func Tunnel(w http.ResponseWriter, r *http.Request, target *url.URL, tracker *Co
 	}
 	client, clientBuf, err := hj.Hijack()
 	if err != nil {
+		// The writer advertised http.Hijacker but the hijack failed (e.g. a
+		// status-recording wrapper over a non-Hijacker writer, where the
+		// w.(http.Hijacker) check above can't tell). The connection was not
+		// hijacked, so we can still answer the client with a 500 instead of
+		// dropping it half-open.
+		http.Error(w, "websocket unsupported", http.StatusInternalServerError)
 		return fmt.Errorf("hijacking client connection: %w", err)
 	}
 	defer client.Close()
@@ -110,16 +116,11 @@ func Tunnel(w http.ResponseWriter, r *http.Request, target *url.URL, tracker *Co
 
 	// From here on, both conns are raw: relay the backend's handshake
 	// response bytes (101 or a rejection) straight through, then pipe.
+	// clientBuf.Reader drains any bytes buffered during the hijack before
+	// reading the raw conn directly, so no client frames are lost.
 	errc := make(chan error, 2)
-	go func() { // backend -> client
-		_, err := io.Copy(client, backend)
-		errc <- err
-	}()
-	go func() { // client -> backend; the bufio.Reader drains any bytes
-		// buffered during hijack, then reads the conn directly.
-		_, err := io.Copy(backend, clientBuf.Reader)
-		errc <- err
-	}()
+	go copyConn(client, backend, errc)           // backend -> client
+	go copyConn(backend, clientBuf.Reader, errc) // client -> backend
 
 	// First side to error/EOF tears the tunnel down; deferred Closes
 	// unblock the other copy goroutine.
@@ -127,6 +128,22 @@ func Tunnel(w http.ResponseWriter, r *http.Request, target *url.URL, tracker *Co
 		log.Debug("websocket tunnel closed", "target", target.Host, "err", err)
 	}
 	return nil
+}
+
+// copyConn relays src into dst and reports the outcome on errc exactly
+// once, recovering from any panic so a misbehaving connection can tear
+// down the tunnel cleanly instead of crashing the process. The deferred
+// recover is a no-op on the normal return (recover() yields nil), so the
+// normal send and the panic send are mutually exclusive — never both,
+// never neither.
+func copyConn(dst io.Writer, src io.Reader, errc chan<- error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			errc <- fmt.Errorf("panic in websocket copy: %v", rec)
+		}
+	}()
+	_, err := io.Copy(dst, src)
+	errc <- err
 }
 
 func dialTarget(target *url.URL) (net.Conn, error) {

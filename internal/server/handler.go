@@ -8,6 +8,7 @@ import (
 
 	"github.com/KingPin/StageHand/internal/orchestrator"
 	"github.com/KingPin/StageHand/internal/proxy"
+	"github.com/KingPin/StageHand/internal/version"
 )
 
 // handle is the unified request flow (PRD §4): CORS → reserved namespace
@@ -22,6 +23,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setCORSOrigin(w, r, rt.corsOrigins)
+
+	// Unauthenticated liveness probe — short-circuits BEFORE the admin-token
+	// gate so Docker/k8s health checks work without a token (PRD §5.4).
+	if r.Method == http.MethodGet && r.URL.Path == "/stagehand/healthz" {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version.Version})
+		return
+	}
 
 	if strings.HasPrefix(r.URL.Path, "/stagehand/") {
 		// Admin auth (PRD §5): rt.adminToken == "" means it was explicitly
