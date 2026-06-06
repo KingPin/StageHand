@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -171,7 +172,7 @@ func TestPeekModel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest("POST", "/v1/chat/completions",
 				strings.NewReader(tt.body))
-			model, err := PeekModel(req)
+			model, err := PeekModel(req, 0)
 			if err != nil {
 				t.Fatalf("PeekModel: %v", err)
 			}
@@ -191,7 +192,7 @@ func TestPeekModel(t *testing.T) {
 func TestPeekModelSetsGetBody(t *testing.T) {
 	body := `{"model":"qwen-moe"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
-	if _, err := PeekModel(req); err != nil {
+	if _, err := PeekModel(req, 0); err != nil {
 		t.Fatal(err)
 	}
 	if req.GetBody == nil {
@@ -212,7 +213,7 @@ func TestPeekModelSetsGetBody(t *testing.T) {
 
 func TestPeekModelNilBody(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/models", nil)
-	model, err := PeekModel(req)
+	model, err := PeekModel(req, 0)
 	if err != nil || model != "" {
 		t.Errorf("PeekModel(nil body) = %q, %v; want \"\", nil", model, err)
 	}
@@ -224,7 +225,7 @@ func TestPeekModelOversizedBodyReplaysIntact(t *testing.T) {
 	big := `{"model":"qwen-moe","pad":"` + strings.Repeat("x", MaxPeekSize+64*1024) + `"}`
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(big))
 
-	model, err := PeekModel(req)
+	model, err := PeekModel(req, 0)
 	if err != nil {
 		t.Fatalf("PeekModel: %v", err)
 	}
@@ -240,6 +241,55 @@ func TestPeekModelOversizedBodyReplaysIntact(t *testing.T) {
 	}
 }
 
+// TestPeekModelCapMakesLargeBodyReplayable: a body over MaxPeekSize but
+// within an explicit maxBuffer cap is fully buffered, so GetBody is set
+// (replayable after a swap) even though it's too large to parse for "model".
+func TestPeekModelCapMakesLargeBodyReplayable(t *testing.T) {
+	big := `{"model":"qwen-moe","pad":"` + strings.Repeat("x", MaxPeekSize+64*1024) + `"}`
+	bufCap := int64(len(big) + 1024) // comfortably above the body
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(big))
+
+	model, err := PeekModel(req, bufCap)
+	if err != nil {
+		t.Fatalf("PeekModel: %v", err)
+	}
+	if model != "" {
+		t.Errorf("model = %q, want \"\" (body over MaxPeekSize is not parsed)", model)
+	}
+	if req.GetBody == nil {
+		t.Fatal("GetBody is nil; a body within the cap must be replayable")
+	}
+	rc, err := req.GetBody()
+	if err != nil {
+		t.Fatalf("GetBody: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(got, []byte(big)) {
+		t.Errorf("GetBody replayed %d bytes, want %d identical", len(got), len(big))
+	}
+}
+
+// TestPeekModelHugeCapDoesNotTruncate: a near-MaxInt64 cap must not overflow
+// the internal "+1 sentinel byte" read limit. A negative LimitReader bound
+// would read 0 bytes and silently forward an empty body — guard against it.
+func TestPeekModelHugeCapDoesNotTruncate(t *testing.T) {
+	body := `{"model":"qwen-moe","messages":[]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+
+	model, err := PeekModel(req, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("PeekModel: %v", err)
+	}
+	if model != "qwen-moe" {
+		t.Errorf("model = %q, want qwen-moe (body must not be truncated)", model)
+	}
+	replayed, _ := io.ReadAll(req.Body)
+	if string(replayed) != body {
+		t.Errorf("replayed body = %q, want original %q", replayed, body)
+	}
+}
+
 // TestPeekModelEndToEndThroughProxy proves the peeked body reaches the
 // backend byte-identical via the real ReverseProxy path.
 func TestPeekModelEndToEndThroughProxy(t *testing.T) {
@@ -251,7 +301,7 @@ func TestPeekModelEndToEndThroughProxy(t *testing.T) {
 
 	rp := New(mustParse(t, backend.URL), discardLogger())
 	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		model, err := PeekModel(r)
+		model, err := PeekModel(r, 0)
 		if err != nil {
 			t.Errorf("PeekModel: %v", err)
 		}

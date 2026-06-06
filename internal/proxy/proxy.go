@@ -5,6 +5,7 @@
 package proxy
 
 import (
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
@@ -48,6 +49,15 @@ func New(target *url.URL, log *slog.Logger) *httputil.ReverseProxy {
 		Transport:     sharedTransport,
 		ErrorLog:      slog.NewLogLogger(log.Handler(), slog.LevelError),
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// A request body that overflows the configured cap surfaces here
+			// (MaxBytesReader returns the error while the proxy reads the
+			// body for the upstream). It's a client error, not an upstream
+			// failure — report 413, not 502.
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				httperr.Write(w, http.StatusRequestEntityTooLarge, "request body too large", err.Error())
+				return
+			}
 			log.Error("upstream round-trip failed",
 				"target", target.String(), "path", r.URL.Path, "err", err)
 			httperr.Write(w, http.StatusBadGateway, "upstream request failed", err.Error())

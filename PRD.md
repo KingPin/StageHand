@@ -261,9 +261,45 @@ progress, queues, and execution status:
   frontends do this automatically), which re-enters pool orchestration and can
   swap the service back in.
 
+### 4.3 Request Body Size Cap
+
+`server.max_request_bytes` bounds the size of a proxied request body. It
+defaults to `0`, which disables the cap: bodies are forwarded unbounded and
+large ones (over the 1 MiB model-peek window) are streamed through without
+being buffered.
+
+When set to a positive value:
+
+- A request whose declared `Content-Length` exceeds the cap is rejected with
+  `413 Request Entity Too Large` before the body is read. A chunked or
+  under-declared body that overflows the cap while being read is likewise
+  surfaced as `413`.
+- An accepted body (at or under the cap) is fully buffered in memory, which
+  sets `GetBody` on the outbound request and makes it **replayable**. This is
+  what lets the transport transparently retry against a freshly-swapped
+  backend when the pooled keep-alive connection has gone stale — the common
+  case in the first moments after a container swap. Without a cap, a body over
+  the peek window is not buffered and such a request is not retryable.
+
+Set the cap above the largest legitimate request you expect (base64 image
+payloads, long chat contexts).
+
 ## 5. System Health, Observability, & CORS
 
 StageHand reserves the `/stagehand/*` namespace for native API calls.
+
+### 5.0 Liveness Probe (`GET /stagehand/healthz`)
+
+An unauthenticated liveness endpoint for container/orchestrator health checks.
+It returns `200` with `{"status":"ok","version":"<version>"}` and
+short-circuits **before** the admin-token gate (§5.4), so probes need no token.
+It reports only that the process is serving — not pool or backend health (use
+§5.1 for that).
+
+The `-healthcheck` CLI flag drives this endpoint for the bundled Docker
+`HEALTHCHECK`: it loads the config solely to read `server.port`, performs an
+unauthenticated `GET /stagehand/healthz` against `127.0.0.1`, and exits `0`
+when the response is `200` (non-zero otherwise).
 
 ### 5.1 Self-Health API (`GET /stagehand/status`)
 
