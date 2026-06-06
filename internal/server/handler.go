@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -56,10 +57,32 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	r.Header.Del(proxyTokenHeader)
 	r.Header.Del(adminTokenHeader)
 
+	// Optional request body-size cap (PRD §4). 0 disables it. A declared
+	// Content-Length over the cap is rejected immediately; for chunked or
+	// under-declared bodies, MaxBytesReader enforces the limit as the body
+	// is read (during model peek or while proxying) and surfaces a
+	// *http.MaxBytesError, which we map to 413 below.
+	if rt.maxRequestBytes > 0 {
+		if r.ContentLength > rt.maxRequestBytes {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large",
+				fmt.Sprintf("Content-Length %d exceeds limit %d", r.ContentLength, rt.maxRequestBytes))
+			return
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, rt.maxRequestBytes)
+		}
+	}
+
 	match, ok := rt.router.Match(r.URL.Path, r.Header, "")
 	if ok && match.NeedsModel && r.Method == http.MethodPost && hasJSONBody(r) {
-		model, err := proxy.PeekModel(r)
+		model, err := proxy.PeekModel(r, rt.maxRequestBytes)
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body too large",
+					fmt.Sprintf("body exceeds limit %d", tooLarge.Limit))
+				return
+			}
 			writeError(w, http.StatusBadRequest, "unreadable request body", err.Error())
 			return
 		}

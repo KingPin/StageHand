@@ -29,6 +29,9 @@ func (c *Config) validate() ([]string, error) {
 	if c.Server.MaxQueueSize < 1 {
 		fail("server.max_queue_size must be >= 1, got %d", c.Server.MaxQueueSize)
 	}
+	if c.Server.MaxRequestBytes < 0 {
+		fail("server.max_request_bytes must be >= 0 (0 disables the cap), got %d", c.Server.MaxRequestBytes)
+	}
 
 	// --- server auth ---
 	// An omitted token (empty string) is valid: admin auth auto-generates a

@@ -51,6 +51,9 @@ type runtime struct {
 	// reload can change tokens (PRD §5).
 	adminToken string
 	proxyToken string
+	// maxRequestBytes caps proxied request body size (config
+	// server.max_request_bytes); 0 disables the cap. See handler.go.
+	maxRequestBytes int64
 }
 
 // AuthOptions carries the process-level auth decisions made at boot, before
@@ -162,14 +165,15 @@ func (s *Server) Close() {
 // close (flushing their queues).
 func (s *Server) buildRuntime(cfg *config.Config, prev *runtime) (*runtime, error) {
 	rt := &runtime{
-		cfg:         cfg,
-		corsOrigins: cfg.Server.CORSAllowedOrigins,
-		router:      router.New(cfg.Routes),
-		services:    make(map[string]*service, len(cfg.Services)),
-		pools:       map[string]*orchestrator.Pool{},
-		poolSigs:    map[string]string{},
-		adminToken:  s.resolveAdminToken(cfg),
-		proxyToken:  cfg.Server.Auth.ProxyToken,
+		cfg:             cfg,
+		corsOrigins:     cfg.Server.CORSAllowedOrigins,
+		router:          router.New(cfg.Routes),
+		services:        make(map[string]*service, len(cfg.Services)),
+		pools:           map[string]*orchestrator.Pool{},
+		poolSigs:        map[string]string{},
+		adminToken:      s.resolveAdminToken(cfg),
+		proxyToken:      cfg.Server.Auth.ProxyToken,
+		maxRequestBytes: cfg.Server.MaxRequestBytes,
 	}
 
 	// Fail safe: an empty adminToken means "admin auth off", which must only
@@ -351,4 +355,3 @@ func warnRestartOnly(log *slog.Logger, prev, next *config.Server) {
 			"active", prev.DockerSocketPath, "requested", next.DockerSocketPath)
 	}
 }
-

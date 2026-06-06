@@ -100,6 +100,13 @@ func TestValidationFailures(t *testing.T) {
 			wantErr: "out of range",
 		},
 		{
+			name: "negative max_request_bytes",
+			mutate: func(s string) string {
+				return strings.Replace(s, "port: 8080", "port: 8080\n  max_request_bytes: -1", 1)
+			},
+			wantErr: "max_request_bytes must be >= 0",
+		},
+		{
 			name:    "route references unknown service",
 			mutate:  func(s string) string { return strings.Replace(s, `service: "embed"`, `service: "nope"`, 1) },
 			wantErr: `service "nope" is not declared`,

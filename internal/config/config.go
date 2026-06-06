@@ -34,7 +34,13 @@ type Server struct {
 	DockerSocketPath   string   `yaml:"docker_socket_path"`
 	CORSAllowedOrigins []string `yaml:"cors_allowed_origins"`
 	MaxQueueSize       int      `yaml:"max_queue_size"`
-	Auth               Auth     `yaml:"auth"`
+	// MaxRequestBytes caps the size of a proxied request body. 0 (the
+	// default) disables the cap: bodies are forwarded unbounded and large
+	// ones are not buffered for retry. When set >0, a request whose body
+	// exceeds it is rejected with 413, and an accepted body is fully
+	// buffered so http.Transport can replay it after a container swap.
+	MaxRequestBytes int64 `yaml:"max_request_bytes"`
+	Auth            Auth  `yaml:"auth"`
 }
 
 // Auth holds the optional API tokens that gate StageHand's HTTP surface
