@@ -101,6 +101,7 @@ client ──> stagehand :8080 ──┬─> [gpu pool] comfyui      (swapped on
 | `docker_socket_path` | `/var/run/docker.sock` | Docker daemon socket |
 | `cors_allowed_origins` | — | `["*"]` or explicit origins; preflights echo requested headers |
 | `max_queue_size` | `100` | Default per-service queue bound |
+| `max_request_bytes` | `0` | Cap on proxied request body size in bytes; `0` disables it. Over the cap → `413`; within it, the body is buffered so it can be replayed on the post-swap retry |
 | `auth.admin_token` | auto-generated | Token for the `/stagehand/*` admin API (see [Authentication](#authentication)) |
 | `auth.proxy_token` | — | When set, all proxied traffic must present it; omit to leave the proxy open |
 
@@ -138,6 +139,7 @@ Unmatched requests get `404` with the known-route list in the body.
 
 | Endpoint | Method | Purpose |
 |---|---|---|
+| `/stagehand/healthz` | GET | Unauthenticated liveness probe; returns `{"status":"ok","version":...}`. Short-circuits before the admin-token gate so container/k8s health checks need no token |
 | `/stagehand/status` | GET | Pool states, active service, cooldown countdown, queue depths, always-on health |
 | `/stagehand/swap/{service}` | POST | Pre-warm/force a swap (bypasses grace; chains behind an in-flight swap) |
 | `/stagehand/pool/{pool}/stop` | POST | Force a pool cold; queued requests get `503` |
@@ -145,6 +147,26 @@ Unmatched requests get `404` with the known-route list in the body.
 
 Everything else proxies per your routes — including SSE streams and
 WebSocket upgrades.
+
+### CLI flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `-config` | `config.yaml` | Path to the config file |
+| `-debug` | `false` | Enable debug logging |
+| `-version` | `false` | Print version and exit |
+| `-healthcheck` | `false` | Probe `/stagehand/healthz` on the configured port and exit (`0` if healthy). Used by the Docker `HEALTHCHECK` |
+
+The bundled `Dockerfile` wires the probe in directly:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["/stagehand", "-healthcheck", "-config", "/etc/stagehand/config.yaml"]
+```
+
+The flag loads the config only to read `server.port`, then performs an
+unauthenticated `GET /stagehand/healthz` against `127.0.0.1` — no admin token
+needed.
 
 ### Authentication
 

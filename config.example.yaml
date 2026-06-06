@@ -6,6 +6,14 @@ server:
   docker_socket_path: "/var/run/docker.sock"
   cors_allowed_origins: ["https://app.example.com"]  # Allowed origins for web-UI integrations; avoid "*" in production
   max_queue_size: 100             # Default per-service queue bound
+  # max_request_bytes: 0          # Cap on proxied request body size in bytes.
+                                  # 0 (default) disables it: bodies are forwarded
+                                  # unbounded. When set >0, a request whose body
+                                  # exceeds it is rejected with 413, and accepted
+                                  # bodies are buffered so they can be replayed on
+                                  # the transparent retry right after a container
+                                  # swap. Set it above your largest legitimate
+                                  # request (image-gen base64, long chat context).
 
   # Authentication (PRD §5). Tokens are sent in dedicated headers and
   # compared in constant time.
