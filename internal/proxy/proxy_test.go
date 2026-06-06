@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -266,6 +267,26 @@ func TestPeekModelCapMakesLargeBodyReplayable(t *testing.T) {
 	rc.Close()
 	if !bytes.Equal(got, []byte(big)) {
 		t.Errorf("GetBody replayed %d bytes, want %d identical", len(got), len(big))
+	}
+}
+
+// TestPeekModelHugeCapDoesNotTruncate: a near-MaxInt64 cap must not overflow
+// the internal "+1 sentinel byte" read limit. A negative LimitReader bound
+// would read 0 bytes and silently forward an empty body — guard against it.
+func TestPeekModelHugeCapDoesNotTruncate(t *testing.T) {
+	body := `{"model":"qwen-moe","messages":[]}`
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body))
+
+	model, err := PeekModel(req, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("PeekModel: %v", err)
+	}
+	if model != "qwen-moe" {
+		t.Errorf("model = %q, want qwen-moe (body must not be truncated)", model)
+	}
+	replayed, _ := io.ReadAll(req.Body)
+	if string(replayed) != body {
+		t.Errorf("replayed body = %q, want original %q", replayed, body)
 	}
 }
 

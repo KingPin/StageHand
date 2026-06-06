@@ -64,6 +64,14 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	// *http.MaxBytesError, which we map to 413 below.
 	if rt.maxRequestBytes > 0 {
 		if r.ContentLength > rt.maxRequestBytes {
+			// The client announced an oversized body we will not read. Signal
+			// connection close and drop our read side so net/http doesn't try
+			// to drain the unread body to reuse the connection — pointless work
+			// (and a slow-client resource sink) when we're rejecting outright.
+			w.Header().Set("Connection", "close")
+			if r.Body != nil {
+				r.Body.Close()
+			}
 			writeError(w, http.StatusRequestEntityTooLarge, "request body too large",
 				fmt.Sprintf("Content-Length %d exceeds limit %d", r.ContentLength, rt.maxRequestBytes))
 			return

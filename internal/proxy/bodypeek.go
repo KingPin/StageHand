@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 )
 
@@ -40,7 +41,15 @@ func PeekModel(req *http.Request, maxBuffer int64) (string, error) {
 		bufLimit = maxBuffer
 	}
 
-	buf, err := io.ReadAll(io.LimitReader(req.Body, bufLimit+1))
+	// Read one byte past the limit so an exactly-at-limit body is kept while
+	// an over-limit one is detected. Guard the +1 against int64 overflow: a
+	// near-MaxInt64 cap would wrap to a negative LimitReader bound, which
+	// reads 0 bytes and silently truncates the forwarded body.
+	readLimit := bufLimit
+	if readLimit < math.MaxInt64 {
+		readLimit++
+	}
+	buf, err := io.ReadAll(io.LimitReader(req.Body, readLimit))
 	if err != nil {
 		req.Body.Close()
 		return "", fmt.Errorf("peeking request body: %w", err)

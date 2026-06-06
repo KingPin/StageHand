@@ -63,6 +63,11 @@ func TestBodyCapRejectsByContentLength(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want 413", resp.StatusCode)
 	}
+	// The handler signals Connection: close so net/http doesn't drain the
+	// unread oversized body; the client surfaces that as resp.Close.
+	if !resp.Close {
+		t.Error("resp.Close = false, want true (413 path should close the connection)")
+	}
 }
 
 // TestBodyCapRejectsChunkedOverflow: a chunked body (no Content-Length)
