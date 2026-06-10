@@ -30,6 +30,12 @@ with all backend containers. Service `target_url`s therefore use container names
 as hosts (e.g., `http://comfyui-stable:8188`). The host's Docker socket is mounted
 into the StageHand container for lifecycle control.
 
+StageHand is **single-instance by design**: it holds all pool state in memory and
+enforces GPU mutual exclusion through one Docker socket. Run exactly one instance
+per Docker host — two instances would race each other's swaps. There is no
+HA/clustering mode; for availability, rely on the supervisor restarting the single
+instance (see `docs/deployment.md`), not on horizontal replicas.
+
 ## 2. Declarative Configuration Spec (`config.yaml`)
 
 StageHand parses `config.yaml` on startup (and on hot reload, §7). Users may declare
