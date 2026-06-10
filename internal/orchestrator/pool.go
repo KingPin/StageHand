@@ -508,9 +508,9 @@ func (p *Pool) handleAdminStop() AdminOutcome {
 	case StateIdle:
 		return AdminAlreadyIdle
 	case StateSwapping:
-		// startStopAll → supersedeWorker cancels and orphans the in-flight
-		// swap worker so it can't start its target after the stop sweep.
-		p.target = ""
+		// startStopAll resets state (active/target) and, via supersedeWorker,
+		// cancels and orphans the in-flight swap worker so it can't start its
+		// target after the stop sweep.
 		p.startStopAll()
 		return AdminInitiated
 	default: // Active, Error
