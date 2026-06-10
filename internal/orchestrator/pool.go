@@ -69,7 +69,12 @@ type Pool struct {
 	members       map[string]*member
 	epochs        [2]uint64 // per timerKind; bumps invalidate in-flight ticks
 	opSeq         uint64    // bumps identify the current swap worker
-	seq           uint64    // waiter ordering across services
+	// swapCancel cancels the in-flight swap/stop worker's context. Owned by
+	// the manager goroutine (no lock). A superseded worker re-checks this
+	// context before it starts/stops a container, so it cannot mutate Docker
+	// state out from under the worker that replaced it (PRD §3.2).
+	swapCancel context.CancelFunc
+	seq        uint64 // waiter ordering across services
 }
 
 // NewPool builds the pool and starts its manager goroutine.
@@ -308,6 +313,18 @@ func (p *Pool) touch(service string) {
 	}
 }
 
+// supersedeWorker cancels the in-flight swap/stop worker (if any) and bumps
+// opSeq so its terminal report is ignored. The worker re-checks its context
+// before it starts or stops a container, so a superseded worker cannot mutate
+// Docker state out from under its replacement (PRD §3.2 mutual exclusion).
+func (p *Pool) supersedeWorker() {
+	if p.swapCancel != nil {
+		p.swapCancel()
+		p.swapCancel = nil
+	}
+	p.opSeq++
+}
+
 // startSwap transitions to SWAPPING and spawns the worker. The worker is
 // guaranteed to deliver exactly one terminal swapMsg, so SWAPPING cannot
 // get stuck.
@@ -317,11 +334,13 @@ func (p *Pool) startSwap(target string) {
 	p.active = ""
 	p.target = target
 	p.bumpEpochs() // invalidate any pending grace/cooldown ticks
-	p.opSeq++
+	p.supersedeWorker()
+	ctx, cancel := context.WithCancel(context.Background())
+	p.swapCancel = cancel
 	p.publish()
 	others := p.otherContainers(target)
 	p.log.Info("swap started", "target", target)
-	go p.doSwap(p.opSeq, m, others)
+	go p.doSwap(p.opSeq, ctx, m, others)
 }
 
 // startStopAll transitions to SWAPPING for a cold-pool stop (cooldown
@@ -331,15 +350,23 @@ func (p *Pool) startStopAll() {
 	p.active = ""
 	p.target = ""
 	p.bumpEpochs()
-	p.opSeq++
+	p.supersedeWorker()
+	ctx, cancel := context.WithCancel(context.Background())
+	p.swapCancel = cancel
 	p.publish()
 	p.log.Info("cooldown expired, stopping pool (cold)")
-	go p.doStopAll(p.opSeq)
+	go p.doStopAll(p.opSeq, ctx)
 }
 
 func (p *Pool) handleSwap(msg swapMsg) {
 	if msg.op != p.opSeq {
 		return // stale worker from a superseded swap
+	}
+	// This worker has delivered its terminal report; release its context.
+	// chainAfterTerminal may start a fresh swap and install a new cancel.
+	if p.swapCancel != nil {
+		p.swapCancel()
+		p.swapCancel = nil
 	}
 	switch msg.kind {
 	case swapComplete:
@@ -481,7 +508,8 @@ func (p *Pool) handleAdminStop() AdminOutcome {
 	case StateIdle:
 		return AdminAlreadyIdle
 	case StateSwapping:
-		p.opSeq++ // orphan the in-flight worker
+		// startStopAll → supersedeWorker cancels and orphans the in-flight
+		// swap worker so it can't start its target after the stop sweep.
 		p.target = ""
 		p.startStopAll()
 		return AdminInitiated

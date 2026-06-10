@@ -214,7 +214,7 @@ func (p *Pool) handleExternalEvent(ev extEvent) {
 				return // sibling noise mid-swap; the sweep handles it
 			}
 			p.log.Warn("swap target died externally; aborting swap", "container", ev.container)
-			p.opSeq++ // orphan the in-flight worker (its report goes stale)
+			p.supersedeWorker() // cancel + orphan the in-flight worker so it can't restart the dead target
 			p.state = StateError
 			p.active = ""
 			p.target = ""
