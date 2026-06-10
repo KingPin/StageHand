@@ -210,6 +210,27 @@ process lifetime.
   reconnect (ComfyUI/A1111 frontends do so automatically). Size
   `grace_period_seconds` to your interactive sessions if this matters.
 
+## Deployment
+
+StageHand is **single-instance by design** — it holds pool state in memory and
+drives one Docker socket, so run exactly one process per host (use the
+supervisor's restart for availability, not replicas). It serves **plain HTTP**
+with no built-in TLS, so run it behind a TLS-terminating reverse proxy
+(localhost-bound) and never expose `:8080` directly. The proxy must allow long
+waits (cold-start swaps hold a request for up to `startup_timeout_seconds`) and
+must not buffer responses (SSE/chunked streaming).
+
+See [`docs/deployment.md`](docs/deployment.md) for ready-to-use nginx, Caddy,
+Traefik, and cloudflared examples, the security posture, and the
+`max_request_bytes` swap-retry caveat.
+
+## Operations
+
+[`docs/runbook.md`](docs/runbook.md) is a symptom → diagnosis → action runbook
+keyed off the pool states and admin endpoints above: pools stuck `SWAPPING`,
+`ERROR` recovery, the `4xx`/`5xx` status codes, Docker daemon outages, hot-reload
+gotchas, and graceful-shutdown expectations.
+
 ## Development
 
 ```sh

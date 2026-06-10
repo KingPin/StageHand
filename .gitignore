@@ -32,7 +32,11 @@ ONBOARDING.md
 .playwright-mcp/
 
 # --- AI-generated working dirs ---
-docs/
+# docs/ holds AI scratch (raw audit notes, superpowers) by default, but the
+# committed operator docs are explicitly tracked via the negations below.
+docs/*
+!docs/deployment.md
+!docs/runbook.md
 superpowers/
 audit/
 plans/

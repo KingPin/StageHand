@@ -27,7 +27,7 @@ const (
 // swap self-healing: containers left running by a failed stop or
 // out-of-band meddling are cleaned up before the target starts, which
 // is what ultimately enforces the pool's mutual exclusion.
-func (p *Pool) doSwap(op uint64, m *member, others []string) {
+func (p *Pool) doSwap(op uint64, ctx context.Context, m *member, others []string) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed,
@@ -48,6 +48,17 @@ func (p *Pool) doSwap(op uint64, m *member, others []string) {
 			p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed, err: err})
 			return
 		}
+	}
+
+	// If a newer swap or an admin stop superseded us, bail BEFORE registering
+	// the start expectation or starting the target. Otherwise this orphaned
+	// worker would start a container the manager believes is stopped (it
+	// reports IDLE), and the self-op expectation would stop the reconciler
+	// from force-stopping it — a transient mutual-exclusion break (PRD §3.2).
+	if ctx.Err() != nil {
+		p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed,
+			err: fmt.Errorf("swap superseded before start")})
+		return
 	}
 
 	p.ops.expect(m.containerName, "start") // before the call: the event must find it
@@ -78,7 +89,7 @@ func (p *Pool) doSwap(op uint64, m *member, others []string) {
 
 // doStopAll is the cold-pool worker: stop every running member container
 // (cooldown expiry with default_service null).
-func (p *Pool) doStopAll(op uint64) {
+func (p *Pool) doStopAll(op uint64, ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.deliver(swapMsg{op: op, kind: poolStopped,
@@ -88,6 +99,13 @@ func (p *Pool) doStopAll(op uint64) {
 
 	var firstErr error
 	for _, m := range p.sortedMembers() {
+		// A newer swap superseded us; stop touching containers so we don't
+		// stop the one the replacing swap just started (the inverse of the
+		// doSwap race above).
+		if ctx.Err() != nil {
+			p.deliver(swapMsg{op: op, kind: poolStopped, err: ctx.Err()})
+			return
+		}
 		running, err := p.isRunning(m.containerName)
 		if err != nil {
 			if firstErr == nil {

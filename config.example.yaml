@@ -14,6 +14,11 @@ server:
                                   # the transparent retry right after a container
                                   # swap. Set it above your largest legitimate
                                   # request (image-gen base64, long chat context).
+                                  # CAVEAT: with the default 0, bodies larger than
+                                  # the 1 MiB peek window are NOT buffered, so they
+                                  # cannot be replayed — a request landing on a
+                                  # stale pooled connection just after a swap may
+                                  # see a one-off 502. Setting a cap closes this.
 
   # Authentication (PRD §5). Tokens are sent in dedicated headers and
   # compared in constant time.

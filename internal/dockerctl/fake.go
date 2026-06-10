@@ -22,6 +22,7 @@ type FakeClient struct {
 	stopErr    map[string]error
 	events     chan Event
 	evErrs     chan error
+	beforeStop func(name string) // test hook, invoked without the lock at Stop entry
 }
 
 var _ Client = (*FakeClient)(nil)
@@ -79,6 +80,13 @@ func (f *FakeClient) Start(_ context.Context, name string) error {
 
 func (f *FakeClient) Stop(_ context.Context, name string, _ time.Duration) error {
 	f.mu.Lock()
+	hook := f.beforeStop
+	f.mu.Unlock()
+	if hook != nil {
+		hook(name) // tests park a swap worker mid-sweep here
+	}
+
+	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "stop:"+name)
 	if err := f.stopErr[name]; err != nil {
@@ -126,6 +134,15 @@ func (f *FakeClient) EmitExternal(name, action string) {
 
 // EmitStreamError injects an error on the events error channel.
 func (f *FakeClient) EmitStreamError(err error) { f.evErrs <- err }
+
+// SetBeforeStop installs a hook invoked (without the lock held) at the start
+// of every Stop call, before it records the call or mutates state. Tests use
+// it to park a swap worker mid-sweep and drive a concurrent transition.
+func (f *FakeClient) SetBeforeStop(fn func(name string)) {
+	f.mu.Lock()
+	f.beforeStop = fn
+	f.mu.Unlock()
+}
 
 // SetStartErr makes future Start calls for name fail with err.
 func (f *FakeClient) SetStartErr(name string, err error) {

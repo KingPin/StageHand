@@ -1,0 +1,58 @@
+name: Release
+
+# Publishes a multi-arch container image to GHCR on a v* tag.
+#
+# DISABLED until the repository is public: the `release-image` job is guarded
+# with `if: false`. To enable, remove that guard (or replace it with a real
+# condition such as `if: startsWith(github.ref, 'refs/tags/v')`).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version (e.g. 1.2.3); defaults to the git tag name"
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release-image:
+    if: false # DISABLED until the repo is public — see header comment.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Derive version
+        id: version
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          V="${INPUT_VERSION:-${REF_NAME#v}}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ghcr.io/kingpin/stagehand:${{ steps.version.outputs.version }}
+            ghcr.io/kingpin/stagehand:latest
