@@ -1,0 +1,52 @@
+# Example 04 — Header-gated routing with fall-through
+#
+# Two backends behind the SAME path: a "priority" tenant gets the big GPU model,
+# everyone else gets the always-on small CPU model. The selector is a request
+# header, not the body. See PRD §2.
+#
+# Matching is first-match-wins and headers only GATE a route — if the listed
+# headers don't all match, the route FALLS THROUGH to the next one. So the gated
+# route MUST come before the un-gated catch-all, or it would never be reached.
+#
+# Try it:
+#   curl :8080/v1/chat/completions -H 'X-Tenant: priority' -d '{...}'  -> llama-big
+#   curl :8080/v1/chat/completions                          -d '{...}'  -> llama-small
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+vram_pools:
+  gpu_0:
+    grace_period_seconds: 60
+    cooldown_seconds: 300
+    default_service: null
+
+services:
+  llama-small:
+    container_name: "llama-small"
+    target_url: "http://llama-small:8080"
+    health_path: "/health"
+    vram_pool: null               # Always-on CPU
+
+  llama-big:
+    container_name: "llama-big"
+    target_url: "http://llama-big:8080"
+    health_path: "/health"
+    startup_timeout_seconds: 240
+    vram_pool: "gpu_0"
+
+routes:
+  # Gated route FIRST. All listed headers must match exactly (case-insensitive
+  # header name, exact value); otherwise this route is skipped.
+  - path_prefix: "/v1/chat/completions"
+    headers:
+      X-Tenant: "priority"
+    service: "llama-big"
+
+  # Un-gated fallback for the same path — reached when the header above didn't match.
+  - path_prefix: "/v1/chat/completions"
+    service: "llama-small"
+
+  - path_prefix: "/"
+    service: "llama-small"

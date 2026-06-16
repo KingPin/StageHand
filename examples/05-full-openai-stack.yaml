@@ -1,0 +1,83 @@
+# Example 05 — Full OpenAI-compatible stack (production-shaped)
+#
+# Everything at once: always-on CPU services for embeddings and reranking, a GPU
+# pool shared by a big chat model and an image generator, model-based routing on
+# the chat endpoint, dedicated paths for each capability, a transparent
+# websocket, auth turned on, and a request-body size cap. See PRD §2 and §5.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  docker_socket_path: "/var/run/docker.sock"
+  cors_allowed_origins:
+    - "https://app.example.com"   # Web-UI origins; avoid "*" in production
+  max_queue_size: 100             # Default per-service queue bound
+  max_request_bytes: 33554432     # 32 MiB cap; also enables body replay across swaps (PRD §2)
+
+  # Auth (PRD §5): tokens are sent in dedicated headers, compared in constant time.
+  auth:
+    admin_token: "change-me-to-a-long-random-value"   # gates /stagehand/* via X-Stagehand-Admin-Token
+    proxy_token: "another-long-random-value"          # all proxied traffic must send X-Stagehand-Token
+
+vram_pools:
+  gpu_0:
+    grace_period_seconds: 60
+    cooldown_seconds: 300
+    default_service: "chat-big"   # Warm: keep the chat model hot when idle
+
+services:
+  # --- Always-on CPU services (vram_pool null = no orchestration) ---
+  embeddings:
+    container_name: "llama-embeddings"
+    target_url: "http://llama-embeddings:8080"
+    health_path: "/health"
+    vram_pool: null
+
+  reranker:
+    container_name: "llama-reranker"
+    target_url: "http://llama-reranker:8080"
+    health_path: "/health"
+    vram_pool: null
+
+  # --- GPU pool members (mutually exclusive) ---
+  chat-big:
+    container_name: "llama-big"
+    target_url: "http://llama-big:8080"
+    health_path: "/health"
+    startup_timeout_seconds: 240
+    max_queue_size: 50            # Per-service override of server.max_queue_size
+    vram_pool: "gpu_0"
+
+  comfyui:
+    container_name: "comfyui"
+    target_url: "http://comfyui:8188"
+    health_path: "/"
+    startup_timeout_seconds: 180
+    vram_pool: "gpu_0"
+
+routes:
+  # Dedicated capability endpoints -> always-on CPU services.
+  - path_prefix: "/v1/embeddings"
+    service: "embeddings"
+
+  - path_prefix: "/v1/rerank"
+    service: "reranker"
+
+  # Chat: route by model. "flux" goes to the image generator (it swaps the GPU),
+  # everything else to the big chat model (the fallback).
+  - path_prefix: "/v1/chat/completions"
+    models:
+      "chat-big": "chat-big"
+      "flux": "comfyui"
+    service: "chat-big"
+
+  # Image generation and ComfyUI websocket.
+  - path_prefix: "/v1/images"
+    service: "comfyui"
+
+  - path_prefix: "/ws"
+    service: "comfyui"
+
+  # Catch-all (model list, ComfyUI UI, etc.).
+  - path_prefix: "/"
+    service: "chat-big"

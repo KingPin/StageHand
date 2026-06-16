@@ -1,0 +1,48 @@
+# StageHand — VRAM multiplexer & reverse proxy.
+#
+# This compose runs StageHand ITSELF only. It does not declare the AI backend
+# containers it manages — StageHand never creates containers, it inspects /
+# starts / stops existing ones by name over the Docker socket (see
+# internal/dockerctl). Keep your backends in their own compose projects; just
+# attach them to the shared `stagehand-net` network below so StageHand can
+# resolve them by container name (e.g. http://comfyui-stable:8188).
+#
+# Prerequisites (one-time):
+#   docker network create stagehand-net
+#
+# Then add this to EACH backend service in your other compose files so they
+# join the same network (they can stay on their own project network too):
+#
+#   services:
+#     comfyui-stable:
+#       container_name: comfyui-stable   # must match StageHand's config
+#       networks: [default, stagehand-net]
+#   networks:
+#     stagehand-net:
+#       external: true
+
+services:
+  stagehand:
+    build: .                  # or: image: ghcr.io/kingpin/stagehand:latest
+    container_name: stagehand
+    restart: unless-stopped   # single instance per host; supervisor restarts it (docs/deployment.md)
+    ports:
+      - "8080:8080"           # matches server.port in config.yaml
+    volumes:
+      # Docker socket: StageHand drives the daemon to swap containers.
+      # Root in the container is required to use the mounted socket on most
+      # hosts (the distroless image runs as root by design).
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Your config, read-only. Hot-reloadable via SIGHUP / POST /stagehand/reload.
+      - ./config.yaml:/etc/stagehand/config.yaml:ro
+    # The image already wires a HEALTHCHECK (/stagehand -healthcheck). Override
+    # only if you change server.port.
+    networks:
+      - stagehand-net
+
+networks:
+  # Pre-create with `docker network create stagehand-net` and attach every
+  # backend StageHand manages to it (see header). Marked external so this
+  # compose project neither creates nor destroys it.
+  stagehand-net:
+    external: true

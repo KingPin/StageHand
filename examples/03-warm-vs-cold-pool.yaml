@@ -1,0 +1,50 @@
+# Example 03 — Two GPU services in one pool: warm vs cold idle behavior
+#
+# `comfyui` (image gen) and `llama` (chat) share a single GPU. They are mutually
+# exclusive: at most one runs at a time, and StageHand swaps between them as
+# requests arrive (stop active -> start target -> wait for health -> release
+# queued requests). See PRD §2/§3.
+#
+# This pool is WARM: when it goes idle it swaps back to `default_service` (llama)
+# rather than stopping everything, so the common path stays hot. To make it COLD
+# instead, set `default_service: null` (commented below) — then both containers
+# stop on idle and the GPU is fully freed until the next request.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+vram_pools:
+  gpu_0:
+    grace_period_seconds: 60      # Anti-thrash: a freshly-swapped container runs >=60s before it can be swapped out again
+    cooldown_seconds: 300         # After 5 min idle, act on default_service
+    default_service: "llama"      # WARM: swap back to llama when idle...
+    # default_service: null       # ...COLD alternative: stop everything when idle
+
+services:
+  llama:
+    container_name: "llama-server"
+    target_url: "http://llama-server:8080"
+    health_path: "/health"
+    startup_timeout_seconds: 240
+    vram_pool: "gpu_0"
+
+  comfyui:
+    container_name: "comfyui"
+    target_url: "http://comfyui:8188"
+    health_path: "/"
+    startup_timeout_seconds: 180
+    vram_pool: "gpu_0"            # Same pool as llama -> mutually exclusive
+
+routes:
+  - path_prefix: "/v1/images"
+    service: "comfyui"
+
+  - path_prefix: "/ws"           # ComfyUI websocket, tunneled transparently
+    service: "comfyui"
+
+  - path_prefix: "/v1"
+    service: "llama"
+
+  - path_prefix: "/"
+    service: "comfyui"           # ComfyUI web UI on the root path

@@ -1,0 +1,32 @@
+# Example 01 — Minimal single-GPU service
+#
+# The smallest config that does something useful: one GPU-backed service behind
+# a catch-all route. StageHand starts the container on the first request, waits
+# for health, then proxies; after `cooldown_seconds` of idle it stops the
+# container to free VRAM (cold pool, since default_service is null). See PRD §2.
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  # Everything else (docker_socket_path, cors_allowed_origins, max_queue_size,
+  # auth, ...) takes its default. See ../config.example.yaml for the full set.
+
+vram_pools:
+  gpu_0:
+    grace_period_seconds: 30      # Min run-time before the container may stop again
+    cooldown_seconds: 300         # Stop the idle container after 5 min
+    default_service: null         # Cold pool: nothing runs when idle
+
+services:
+  llama:
+    container_name: "llama-server"
+    target_url: "http://llama-server:8080"   # host = container name on the shared Docker network
+    health_path: "/health"
+    startup_timeout_seconds: 240
+    vram_pool: "gpu_0"
+
+routes:
+  # Catch-all: every request goes to `llama`. Routes are first-match-wins, so a
+  # lone "/" prefix matches everything.
+  - path_prefix: "/"
+    service: "llama"
