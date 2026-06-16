@@ -62,12 +62,27 @@ func (p *Pool) doSwap(op uint64, ctx context.Context, m *member, others []string
 	}
 
 	p.ops.expect(m.containerName, "start") // before the call: the event must find it
-	ctx, cancel := p.opCtx(dockerCallDeadline)
-	err := p.docker.Start(ctx, m.containerName)
+	startCtx, cancel := p.opCtx(dockerCallDeadline)
+	err := p.docker.Start(startCtx, m.containerName)
 	cancel()
 	if err != nil {
 		p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed,
 			err: fmt.Errorf("starting %q: %w", m.containerName, err)})
+		return
+	}
+
+	// Residual TOCTOU (issue #7): a supersession can land AFTER the pre-start
+	// check above but while Start is in flight, since Start runs under its own
+	// deadline context, not the swap ctx. If we were superseded, the container
+	// we just started must not linger running while the manager believes the
+	// pool is IDLE — clean up after ourselves rather than relying on the next
+	// swap's defensive sweep (PRD §3.2 mutual exclusion).
+	if ctx.Err() != nil {
+		if err := p.stopAndConfirm(m.containerName); err != nil {
+			p.log.Error("self-cleaning superseded swap target", "container", m.containerName, "err", err)
+		}
+		p.deliver(swapMsg{op: op, target: m.name, kind: swapFailed,
+			err: fmt.Errorf("swap superseded after start")})
 		return
 	}
 
