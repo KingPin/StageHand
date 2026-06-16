@@ -147,6 +147,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          # Only the binary archives — NOT the *.dockerbuild metadata artifact
+          # that build-push-action uploads when provenance/sbom are enabled.
+          pattern: dist-*
           path: dist
           merge-multiple: true
 
