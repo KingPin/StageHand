@@ -48,6 +48,17 @@ worknotes/
 .env.*
 *.local.yaml
 
+# Operator-local StageHand config (host IP, container names, tokens). The
+# committed template lives in config.example.yaml; the live config is local.
+/config.yaml
+
+# Local docker-compose overrides (auto-merged by `docker compose`). Keep the
+# base docker-compose.yml committed; host-specific tweaks go here, untracked.
+docker-compose.override.yml
+docker-compose.override.yaml
+compose.override.yml
+compose.override.yaml
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db
