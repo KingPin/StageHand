@@ -1,0 +1,58 @@
+# Example 02 — Split CPU vs GPU by model name (the headline pattern)
+#
+# One OpenAI-style endpoint, two backends: a small model that runs always-on on
+# CPU, and a big model that lives in the GPU pool and is swapped in on demand.
+# StageHand peeks the JSON body's "model" field and routes accordingly. See PRD §2.
+#
+# Try it:
+#   curl :8080/v1/chat/completions -d '{"model":"small","messages":[...]}'  -> llama-small (CPU, instant)
+#   curl :8080/v1/chat/completions -d '{"model":"big","messages":[...]}'    -> llama-big   (GPU, cold-start swap)
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+vram_pools:
+  gpu_0:
+    grace_period_seconds: 60
+    cooldown_seconds: 300
+    default_service: null         # Cold pool: free the GPU when the big model is idle
+
+services:
+  # Always-on CPU service: vram_pool null means it bypasses orchestration and is
+  # expected to be running already (no swap, no cold-start).
+  llama-small:
+    container_name: "llama-small"
+    target_url: "http://llama-small:8080"
+    health_path: "/health"
+    vram_pool: null
+
+  # GPU pool member: started on demand, stopped when idle.
+  llama-big:
+    container_name: "llama-big"
+    target_url: "http://llama-big:8080"
+    health_path: "/health"
+    startup_timeout_seconds: 240
+    vram_pool: "gpu_0"
+
+routes:
+  # When a route has a `models:` map, StageHand reads the request body's "model"
+  # field and picks the mapped service. `service:` is the fallback used when the
+  # model isn't in the map (or the body can't be peeked) — keep it the cheap/safe
+  # backend, here the always-on CPU model.
+  - path_prefix: "/v1/chat/completions"
+    models:
+      "small": "llama-small"
+      "big": "llama-big"
+    service: "llama-small"
+
+  - path_prefix: "/v1/completions"
+    models:
+      "small": "llama-small"
+      "big": "llama-big"
+    service: "llama-small"
+
+  # /v1/models and anything else: send to the always-on small model so it never
+  # triggers a GPU swap.
+  - path_prefix: "/"
+    service: "llama-small"
