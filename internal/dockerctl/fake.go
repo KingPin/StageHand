@@ -20,9 +20,10 @@ type FakeClient struct {
 	calls      []string // chronological op log: "start:name", "stop:name"
 	startErr   map[string]error
 	stopErr    map[string]error
-	events     chan Event
-	evErrs     chan error
-	beforeStop func(name string) // test hook, invoked without the lock at Stop entry
+	events      chan Event
+	evErrs      chan error
+	beforeStop  func(name string) // test hook, invoked without the lock at Stop entry
+	beforeStart func(name string) // test hook, invoked without the lock at Start entry
 }
 
 var _ Client = (*FakeClient)(nil)
@@ -59,6 +60,13 @@ func (f *FakeClient) InspectByName(_ context.Context, name string) (ContainerInf
 }
 
 func (f *FakeClient) Start(_ context.Context, name string) error {
+	f.mu.Lock()
+	hook := f.beforeStart
+	f.mu.Unlock()
+	if hook != nil {
+		hook(name) // tests park a swap worker at the start of its target here
+	}
+
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, "start:"+name)
@@ -141,6 +149,16 @@ func (f *FakeClient) EmitStreamError(err error) { f.evErrs <- err }
 func (f *FakeClient) SetBeforeStop(fn func(name string)) {
 	f.mu.Lock()
 	f.beforeStop = fn
+	f.mu.Unlock()
+}
+
+// SetBeforeStart installs a hook invoked (without the lock held) at the start
+// of every Start call, before it records the call or mutates state. Tests use
+// it to park a swap worker at the instant it starts its target, to drive a
+// concurrent supersession into the post-Start window.
+func (f *FakeClient) SetBeforeStart(fn func(name string)) {
+	f.mu.Lock()
+	f.beforeStart = fn
 	f.mu.Unlock()
 }
 
